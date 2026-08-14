@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package apm.v1;
+
+import "apm/v1/trace.proto";
+import "apm/v1/profile.proto";
+
+option java_multiple_files = true;
+option java_package = "com.apm.contracts.query.v1";
+option java_outer_classname = "TelemetryQueryProto";
+
+message TimeRange {
+  uint64 start_time_unix_nano = 1;
+  uint64 end_time_unix_nano = 2;
+}
+
+message PercentileMetric {
+  double p50_ms = 1;
+  double p95_ms = 2;
+  double p99_ms = 3;
+  double avg_ms = 4;
+  double max_ms = 5;
+  uint64 total_requests = 6;
+  uint64 error_count = 7;
+}
+
+message ServiceMetricsSummary {
+  string service_name = 1;
+  PercentileMetric metrics = 2;
+  double error_rate_percent = 3;
+  double rps = 4;
+  uint64 active_instances = 5;
+}
+
+message ServiceDependencyNode {
+  string id = 1;
+  string name = 2;
+  string type = 3;
+  string status = 4;
+  double rps = 5;
+  double p95_ms = 6;
+  double error_rate_percent = 7;
+}
+
+message ServiceDependencyEdge {
+  string source_service = 1;
+  string target_service = 2;
+  uint64 call_count = 3;
+  uint64 error_count = 4;
+  double avg_latency_ms = 5;
+  double p95_latency_ms = 6;
+}
+
+message ServiceTopologyResponse {
+  repeated ServiceDependencyNode nodes = 1;
+  repeated ServiceDependencyEdge edges = 2;
+  uint64 query_time_unix_sec = 3;
+}
+
+message LatencyHistogramBucket {
+  double bucket_start_ms = 1;
+  double bucket_end_ms = 2;
+  uint64 count = 3;
+}
+
+message LatencyHistogramResponse {
+  string service_name = 1;
+  string operation_name = 2;
+  repeated LatencyHistogramBucket buckets = 3;
+  double p50_ms = 4;
+  double p95_ms = 5;
+  double p99_ms = 6;
+  uint64 total_count = 7;
+}
+
+message LiveTelemetryEvent {
+  string event_type = 1;
+  string payload_json = 2;
+  uint64 timestamp_unix_nano = 3;
+}

@@ -1,0 +1,27 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: apm-synthetic-agent
+  threads:
+    virtual:
+      enabled: true
+
+apm:
+  agent:
+    collector-url: ${COLLECTOR_URL:http://localhost:8080}
+    traffic:
+      requests-per-second: 25
+      error-rate-percent: 3.5
+      chaos-mode-enabled: true
+      chaos-interval-seconds: 45
+    profiling:
+      emit-interval-seconds: 10
+      samples-per-batch: 500
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics

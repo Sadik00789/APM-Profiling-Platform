@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package apm.v1;
+
+option java_multiple_files = true;
+option java_package = "com.apm.contracts.profile.v1";
+option java_outer_classname = "ProfileProto";
+
+enum ProfileType {
+  PROFILE_TYPE_UNSPECIFIED = 0;
+  PROFILE_TYPE_CPU = 1;
+  PROFILE_TYPE_WALL = 2;
+  PROFILE_TYPE_ALLOC_OBJECTS = 3;
+  PROFILE_TYPE_ALLOC_SPACE = 4;
+  PROFILE_TYPE_LOCK_COUNT = 5;
+  PROFILE_TYPE_LOCK_TIME = 6;
+}
+
+message ProfileSample {
+  string service_name = 1;
+  ProfileType profile_type = 2;
+  uint64 timestamp_unix_sec = 3;
+  repeated string stack_frames = 4;
+  uint64 sample_count = 5;
+}
+
+message FoldedStackBatch {
+  string service_name = 1;
+  ProfileType profile_type = 2;
+  uint64 timestamp_unix_sec = 3;
+  repeated string raw_lines = 4;
+  uint32 sample_rate_hz = 5;
+}
+
+message FlameGraphNode {
+  string name = 1;
+  string package_name = 2;
+  uint64 self_value = 3;
+  uint64 total_value = 4;
+  double self_percent = 5;
+  double total_percent = 6;
+  repeated FlameGraphNode children = 7;
+  uint32 depth = 8;
+  int64 diff_value = 9;
+  double diff_percent = 10;
+}
+
+message FlameGraphResponse {
+  string service_name = 1;
+  ProfileType profile_type = 2;
+  uint64 start_time_unix_sec = 3;
+  uint64 end_time_unix_sec = 4;
+  uint64 total_samples = 5;
+  FlameGraphNode root = 6;
+  uint32 max_depth = 7;
+  uint32 total_nodes = 8;
+}
+
+message DiffFlameGraphResponse {
+  string service_name = 1;
+  ProfileType profile_type = 2;
+  FlameGraphNode root = 3;
+  uint64 baseline_total = 4;
+  uint64 comparison_total = 5;
+  double overall_change_percent = 6;
+}

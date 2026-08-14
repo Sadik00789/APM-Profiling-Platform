@@ -1,0 +1,38 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    container_name: apm-clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./docker/clickhouse/init:/docker-entrypoint-initdb.d
+      - ./docker/clickhouse/users.d:/etc/clickhouse-server/users.d
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  redis:
+    image: redis:7-alpine
+    container_name: apm-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+volumes:
+  clickhouse-data:
+  redis-data:

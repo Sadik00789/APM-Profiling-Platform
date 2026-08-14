@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package apm.v1;
+
+option java_multiple_files = true;
+option java_package = "com.apm.contracts.trace.v1";
+option java_outer_classname = "TraceProto";
+
+enum SpanKind {
+  SPAN_KIND_UNSPECIFIED = 0;
+  SPAN_KIND_INTERNAL = 1;
+  SPAN_KIND_SERVER = 2;
+  SPAN_KIND_CLIENT = 3;
+  SPAN_KIND_PRODUCER = 4;
+  SPAN_KIND_CONSUMER = 5;
+}
+
+enum StatusCode {
+  STATUS_CODE_UNSET = 0;
+  STATUS_CODE_OK = 1;
+  STATUS_CODE_ERROR = 2;
+}
+
+message SpanRecord {
+  string trace_id = 1;
+  string span_id = 2;
+  string parent_span_id = 3;
+  string service_name = 4;
+  string operation_name = 5;
+  uint64 start_time_unix_nano = 6;
+  uint64 end_time_unix_nano = 7;
+  uint64 duration_nano = 8;
+  StatusCode status_code = 9;
+  string status_message = 10;
+  SpanKind span_kind = 11;
+  map<string, string> attributes = 12;
+}
+
+message BatchSpanRequest {
+  repeated SpanRecord spans = 1;
+  string source_agent_id = 2;
+  uint64 sent_time_unix_nano = 3;
+}
+
+message BatchSpanResponse {
+  uint32 accepted_count = 1;
+  uint32 rejected_count = 2;
+  string error_message = 3;
+}
+
+message TraceTreeNode {
+  SpanRecord span = 1;
+  repeated TraceTreeNode children = 2;
+  bool is_critical_path = 3;
+  double exclusive_time_percent = 4;
+  uint32 depth = 5;
+  uint64 critical_path_self_time_nano = 6;
+}
+
+message TraceTreeResponse {
+  string trace_id = 1;
+  TraceTreeNode root = 2;
+  uint64 total_duration_nano = 3;
+  uint32 total_spans = 4;
+  uint32 critical_path_spans = 5;
+  uint32 error_count = 6;
+  repeated string services_involved = 7;
+}
+
+message SpanSearchQuery {
+  string service_name = 1;
+  string operation_name = 2;
+  StatusCode status_code = 3;
+  uint64 min_duration_nano = 4;
+  uint64 max_duration_nano = 5;
+  uint64 start_time_unix_nano = 6;
+  uint64 end_time_unix_nano = 7;
+  map<string, string> attribute_filters = 8;
+  uint32 limit = 9;
+  uint32 offset = 10;
+}
+
+message SpanSearchResponse {
+  repeated SpanRecord spans = 1;
+  uint64 total_count = 2;
+  uint32 limit = 3;
+  uint32 offset = 4;
+}

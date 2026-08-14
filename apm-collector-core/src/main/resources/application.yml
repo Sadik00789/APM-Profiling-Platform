@@ -1,0 +1,46 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: apm-collector-core
+  threads:
+    virtual:
+      enabled: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2000ms
+
+apm:
+  clickhouse:
+    url: ${CLICKHOUSE_URL:jdbc:ch://localhost:8123/default}
+    user: ${CLICKHOUSE_USER:default}
+    password: ${CLICKHOUSE_PASSWORD:}
+    pool:
+      max-size: 32
+      min-idle: 8
+      idle-timeout-ms: 30000
+      max-lifetime-ms: 600000
+      connection-timeout-ms: 10000
+  storage:
+    batch:
+      buffer-capacity: 50000
+      max-batch-size: 5000
+      flush-interval-ms: 500
+  disruptor:
+    ring-buffer-size: 65536
+  anomaly:
+    window-seconds: 60
+    p95-alert-threshold-ms: 250.0
+    p99-alert-threshold-ms: 500.0
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always

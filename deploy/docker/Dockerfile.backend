@@ -1,0 +1,29 @@
+# Multi-Stage Dockerfile for Java 21 APM Collector & Synthetic Agent Services
+FROM eclipse-temurin:21-jdk-alpine AS builder
+WORKDIR /workspace
+
+COPY gradlew .
+COPY gradle gradle
+COPY build.gradle.kts .
+COPY settings.gradle.kts .
+COPY apm-contracts apm-contracts
+COPY apm-collector-core apm-collector-core
+COPY apm-synthetic-agent apm-synthetic-agent
+
+RUN chmod +x gradlew && ./gradlew bootJar --no-daemon -x test
+
+# Runtime Stage
+FROM eclipse-temurin:21-jre-alpine AS runner
+WORKDIR /app
+
+RUN addgroup -S apm && adduser -S apm -G apm
+USER apm
+
+ARG MODULE=apm-collector-core
+COPY --from=builder /workspace/${MODULE}/build/libs/*.jar app.jar
+
+ENV JAVA_OPTS="-XX:+UseZGC -XX:+ZGenerational -XX:+UnlockExperimentalVMOptions -XX:MaxRAMPercentage=75.0 -Djava.security.egd=file:/dev/./urandom"
+
+EXPOSE 8080 8081
+
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar app.jar"]
