@@ -211,3 +211,9 @@ ORDER BY (service_name, profile_type, timestamp, stack_trace);
 <img width="1920" height="1080" alt="Screenshot 2026-08-15 050617" src="https://github.com/user-attachments/assets/a2972429-52a1-40de-9b41-c48ccbe85e71" />
 <img width="1920" height="1080" alt="Screenshot 2026-08-15 141310" src="https://github.com/user-attachments/assets/e0ca45fc-965e-449c-abec-f9c926a97cda" />
 <img width="1920" height="1080" alt="Screenshot 2026-08-15 141449" src="https://github.com/user-attachments/assets/d65bb7a1-b440-4141-bbec-179b2156ed51" />
+
+---
+
+## 📄 License
+
+This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
