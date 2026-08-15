@@ -205,3 +205,9 @@ ORDER BY (service_name, profile_type, timestamp, stack_trace);
 - **Ingestion Throughput:** $> 100,000\text{ spans/sec}$ per node utilizing non-blocking WebFlux and 500ms micro-batch flusher.
 - **Trie Ingestion Allocation:** $< 12\text{ bytes/frame}$ via Fastutil integer symbol interning.
 - **Flame Graph UI Rendering:** $60\text{ FPS}$ sustained zoom and hover on $> 100,000\text{ nodes}$ via off-thread Web Workers (`trie-parser.worker.ts`) and HTML5 Canvas virtualization.
+
+ <img width="1920" height="1080" alt="Screenshot 2026-08-15 041848" src="https://github.com/user-attachments/assets/27d051a3-d07a-431e-b77a-4940fb8ccb75" />
+<img width="1920" height="1080" alt="Screenshot 2026-08-15 050558" src="https://github.com/user-attachments/assets/d973c2ae-554c-4671-a675-1b3c72293931" />
+<img width="1920" height="1080" alt="Screenshot 2026-08-15 050617" src="https://github.com/user-attachments/assets/a2972429-52a1-40de-9b41-c48ccbe85e71" />
+<img width="1920" height="1080" alt="Screenshot 2026-08-15 141310" src="https://github.com/user-attachments/assets/e0ca45fc-965e-449c-abec-f9c926a97cda" />
+<img width="1920" height="1080" alt="Screenshot 2026-08-15 141449" src="https://github.com/user-attachments/assets/d65bb7a1-b440-4141-bbec-179b2156ed51" />
