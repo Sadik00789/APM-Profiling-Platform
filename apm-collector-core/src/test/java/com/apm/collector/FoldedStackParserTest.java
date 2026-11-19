@@ -52,4 +52,21 @@ class FoldedStackParserTest {
         assertEquals(1, res.get(0).sampleCount());
         assertArrayEquals(new String[]{"singleFrameWithoutCount"}, res.get(0).frames());
     }
+
+    @Test
+    @DisplayName("Should preserve frames containing spaces when trailing token is non-numeric and handle CRLF")
+    void testFramesWithSpacesAndZeroCounts() {
+        String input = "Thread Pool;operator new(unsigned long)\r\n"
+                + "main;;subFrame; 0\r\n"
+                + "main;;leafFrame 12\r\n";
+
+        List<FoldedStackParser.ParsedFoldedSample> samples = parser.parse(input);
+        assertEquals(2, samples.size());
+
+        assertArrayEquals(new String[]{"Thread Pool", "operator new(unsigned long)"}, samples.get(0).frames());
+        assertEquals(1L, samples.get(0).sampleCount());
+
+        assertArrayEquals(new String[]{"main", "leafFrame"}, samples.get(1).frames());
+        assertEquals(12L, samples.get(1).sampleCount());
+    }
 }

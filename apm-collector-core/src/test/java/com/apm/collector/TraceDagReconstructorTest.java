@@ -135,4 +135,76 @@ class TraceDagReconstructorTest {
         assertEquals(1000_001_000L, adjustedChild.getStartTimeUnixNano());
         assertEquals("true", adjustedChild.getAttributesOrDefault("meta.clock_skew_adjusted", "false"));
     }
+
+    @Test
+    @DisplayName("Should not double-count nested chain durations during critical path calculation")
+    void testCriticalPathAvoidsDoubleCountingDeepChains() {
+        String traceId = "trace-deep-vs-wide";
+
+        SpanRecord root = span(traceId, "root", "", 0L, 100_000_000L);
+        // Shallow-per-step deep chain: 60ms -> 55ms -> 50ms (previously wrongly summed to 165ms)
+        SpanRecord branchA = span(traceId, "a1", "root", 5_000_000L, 65_000_000L);
+        SpanRecord childA2 = span(traceId, "a2", "a1", 7_000_000L, 62_000_000L);
+        SpanRecord leafA3 = span(traceId, "a3", "a2", 9_000_000L, 59_000_000L);
+        // Real bottleneck leaf: 90ms
+        SpanRecord bottleneckB = span(traceId, "b1", "root", 5_000_000L, 95_000_000L);
+
+        TraceTreeResponse response = reconstructor.reconstruct(List.of(root, branchA, childA2, leafA3, bottleneckB));
+
+        assertEquals(2, response.getCriticalPathSpans());
+        var b1Node = response.getRoot().getChildrenList().stream()
+                .filter(c -> "b1".equals(c.getSpan().getSpanId()))
+                .findFirst().orElseThrow();
+        assertTrue(b1Node.getIsCriticalPath());
+
+        var a1Node = response.getRoot().getChildrenList().stream()
+                .filter(c -> "a1".equals(c.getSpan().getSpanId()))
+                .findFirst().orElseThrow();
+        assertFalse(a1Node.getIsCriticalPath());
+    }
+
+    @Test
+    @DisplayName("Should compute exclusive time using interval union for parallel children and keep orphan spans")
+    void testParallelChildrenExclusiveTimeAndOrphans() {
+        String traceId = "trace-parallel-orphans";
+
+        // Parent: [0, 100ms], Children: [10ms, 90ms] and [10ms, 25ms] -> union = 80ms -> self = 20ms (20%)
+        SpanRecord root = span(traceId, "root", "", 0L, 100_000_000L);
+        SpanRecord c1 = span(traceId, "c1", "root", 10_000_000L, 90_000_000L);
+        SpanRecord c2 = span(traceId, "c2", "root", 10_000_000L, 25_000_000L);
+        // Disconnected orphan span whose parent was dropped
+        SpanRecord orphan = span(traceId, "orphan", "missing-parent", 20_000_000L, 30_000_000L);
+
+        TraceTreeResponse response = reconstructor.reconstruct(List.of(c2, orphan, c1, root));
+
+        assertEquals(4, response.getTotalSpans());
+        assertEquals(20.0, response.getRoot().getExclusiveTimePercent(), 0.01);
+        assertTrue(response.getRoot().getChildrenList().stream().anyMatch(n -> "orphan".equals(n.getSpan().getSpanId())));
+    }
+
+    @Test
+    @DisplayName("Should handle cyclic parent references without infinite recursion")
+    void testCyclicParentReferences() {
+        String traceId = "trace-cycle";
+        SpanRecord s1 = span(traceId, "s1", "s2", 0L, 50_000_000L);
+        SpanRecord s2 = span(traceId, "s2", "s1", 10_000_000L, 40_000_000L);
+
+        TraceTreeResponse response = assertTimeoutPreemptively(java.time.Duration.ofSeconds(2),
+                () -> reconstructor.reconstruct(List.of(s1, s2)));
+        assertEquals(2, response.getTotalSpans());
+    }
+
+    private SpanRecord span(String traceId, String spanId, String parentId, long startNano, long endNano) {
+        return SpanRecord.newBuilder()
+                .setTraceId(traceId)
+                .setSpanId(spanId)
+                .setParentSpanId(parentId)
+                .setServiceName("svc")
+                .setOperationName("op-" + spanId)
+                .setStartTimeUnixNano(startNano)
+                .setEndTimeUnixNano(endNano)
+                .setDurationNano(endNano - startNano)
+                .setStatusCode(StatusCode.STATUS_CODE_OK)
+                .build();
+    }
 }
