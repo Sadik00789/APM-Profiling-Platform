@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Flame, Database, AlertOctagon, RotateCcw, Activity, Zap, CheckCircle } from 'lucide-react';
 
 interface ChaosStatus {
@@ -19,10 +19,30 @@ export const ChaosControlHUD: React.FC = () => {
   });
   const [isLoading, setIsLoading] = useState(false);
   const [lastActionMessage, setLastActionMessage] = useState<string | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = useCallback((message: string) => {
+    setLastActionMessage(message);
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = setTimeout(() => {
+      setLastActionMessage(null);
+      toastTimerRef.current = null;
+    }, 4000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
 
   const fetchChaosStatus = useCallback(async () => {
     try {
-      const res = await fetch('http://localhost:8081/api/chaos/status').catch(() => null);
+      const res = await fetch('/api/chaos/status').catch(() => null);
       if (res && res.ok) {
         const data: ChaosStatus = await res.json();
         setChaosStatus(data);
@@ -41,36 +61,35 @@ export const ChaosControlHUD: React.FC = () => {
   const triggerChaos = async (scenario: string, intensity = 1.0) => {
     setIsLoading(true);
     try {
-      const res = await fetch(`http://localhost:8081/api/chaos/inject?scenario=${scenario}&intensity=${intensity}`, {
+      const res = await fetch(`/api/chaos/inject?scenario=${encodeURIComponent(scenario)}&intensity=${intensity}`, {
         method: 'POST',
       }).catch(() => null);
 
       if (res && res.ok) {
         const data: ChaosStatus = await res.json();
         setChaosStatus(data);
-        setLastActionMessage(`Injected ${scenario} at ${(intensity * 100).toFixed(0)}% intensity`);
+        showToast(`Injected ${scenario} at ${(intensity * 100).toFixed(0)}% intensity`);
       } else {
         // Fallback optimistic update for demo
         setChaosStatus({
-          scenario: scenario as any,
+          scenario: scenario as ChaosStatus['scenario'],
           intensity,
           active: true,
           activatedAtEpochMillis: Date.now(),
         });
-        setLastActionMessage(`Injected ${scenario} (Agent local trigger)`);
+        showToast(`Injected ${scenario} (Agent local trigger)`);
       }
     } catch (e) {
       console.error('Chaos trigger error', e);
     } finally {
       setIsLoading(false);
-      setTimeout(() => setLastActionMessage(null), 4000);
     }
   };
 
   const resetChaos = async () => {
     setIsLoading(true);
     try {
-      const res = await fetch('http://localhost:8081/api/chaos/reset', {
+      const res = await fetch('/api/chaos/reset', {
         method: 'POST',
       }).catch(() => null);
 
@@ -85,12 +104,11 @@ export const ChaosControlHUD: React.FC = () => {
           activatedAtEpochMillis: 0,
         });
       }
-      setLastActionMessage('Chaos reset to baseline health');
+      showToast('Chaos reset to baseline health');
     } catch (e) {
       console.error('Chaos reset error', e);
     } finally {
       setIsLoading(false);
-      setTimeout(() => setLastActionMessage(null), 4000);
     }
   };
 
@@ -133,7 +151,7 @@ export const ChaosControlHUD: React.FC = () => {
             }`}
             title="Inject multi-threaded BCrypt & regex catastrophic backtracking spikes"
           >
-            <Flame className="w-3 h-3 text-amber-400" />
+            <Flame className={`w-3 h-3 ${chaosStatus.scenario === 'CPU_SPIKE' && chaosStatus.active ? 'text-zinc-950' : 'text-amber-400'}`} />
             Inject CPU Spike
           </button>
 
@@ -147,7 +165,7 @@ export const ChaosControlHUD: React.FC = () => {
             }`}
             title="Inject artificial 300ms–1500ms database query jitter"
           >
-            <Database className="w-3 h-3 text-purple-400" />
+            <Database className={`w-3 h-3 ${chaosStatus.scenario === 'DB_LATENCY' && chaosStatus.active ? 'text-zinc-950' : 'text-purple-400'}`} />
             Inject DB Stall
           </button>
 
@@ -161,7 +179,7 @@ export const ChaosControlHUD: React.FC = () => {
             }`}
             title="Trigger 85%+ HTTP 500 error storm on Payment Service"
           >
-            <AlertOctagon className="w-3 h-3 text-red-400" />
+            <AlertOctagon className={`w-3 h-3 ${chaosStatus.scenario === 'ERROR_STORM' && chaosStatus.active ? 'text-zinc-100' : 'text-red-400'}`} />
             Inject 500 Storm
           </button>
 

@@ -1,45 +1,81 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { Suspense, useState, useEffect, useCallback, useRef } from 'react';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { Search, Filter, GitGraph, ArrowRight, RefreshCw, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Search, GitGraph, ArrowRight, RefreshCw, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { SpanRecord } from '../../types/trace';
 import { formatDuration, formatTimestamp } from '../../lib/utils/formatters';
 
-export default function TracesSearchPage() {
+function TracesSearchContent() {
+  const searchParams = useSearchParams();
+  const paramService = searchParams.get('service');
+
   const [spans, setSpans] = useState<SpanRecord[]>([]);
-  const [selectedService, setSelectedService] = useState('all');
+  const [selectedService, setSelectedService] = useState(paramService || 'all');
   const [selectedStatus, setSelectedStatus] = useState('all');
   const [minDurationMs, setMinDurationMs] = useState<number>(0);
   const [searchOperation, setSearchOperation] = useState('');
+  const [debouncedOperation, setDebouncedOperation] = useState('');
   const [isLoading, setIsLoading] = useState(true);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const services = ['all', 'api-gateway', 'order-service', 'payment-service', 'inventory-service', 'notification-service'];
 
+  useEffect(() => {
+    if (paramService) {
+      setSelectedService(paramService);
+    }
+  }, [paramService]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedOperation(searchOperation.trim());
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [searchOperation]);
+
   const fetchSpans = useCallback(async () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setIsLoading(true);
     try {
       const params = new URLSearchParams();
       if (selectedService !== 'all') params.append('service', selectedService);
       if (selectedStatus !== 'all') params.append('status', selectedStatus);
       if (minDurationMs > 0) params.append('minDurationMs', String(minDurationMs));
-      if (searchOperation.trim()) params.append('operation', searchOperation.trim());
+      if (debouncedOperation) params.append('operation', debouncedOperation);
       params.append('limit', '50');
 
-      const res = await fetch(`/api/v1/traces?${params.toString()}`);
+      const res = await fetch(`/api/v1/traces?${params.toString()}`, {
+        signal: controller.signal,
+      });
       if (res.ok) {
         const data = await res.json();
         setSpans(data.spans || []);
       }
-    } catch (e) {
-      console.error('Failed to query spans:', e);
+    } catch (e: any) {
+      if (e?.name !== 'AbortError') {
+        console.error('Failed to query spans:', e);
+      }
     } finally {
-      setIsLoading(false);
+      if (abortControllerRef.current === controller) {
+        setIsLoading(false);
+      }
     }
-  }, [selectedService, selectedStatus, minDurationMs, searchOperation]);
+  }, [selectedService, selectedStatus, minDurationMs, debouncedOperation]);
 
   useEffect(() => {
     fetchSpans();
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
   }, [fetchSpans]);
 
   return (
@@ -207,5 +243,19 @@ export default function TracesSearchPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function TracesSearchPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="p-12 text-center text-zinc-400 text-xs font-mono">
+          Loading distributed trace explorer...
+        </div>
+      }
+    >
+      <TracesSearchContent />
+    </Suspense>
   );
 }

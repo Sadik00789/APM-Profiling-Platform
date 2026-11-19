@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import * as d3 from 'd3';
 import { FlameGraphNode } from '../../types/profile';
 import { getFrameColor } from '../../lib/utils/color-generator';
@@ -24,7 +24,7 @@ interface RenderBox {
 
 export const FlameGraphCanvas: React.FC<FlameGraphCanvasProps> = ({
   rootNode,
-  searchQuery,
+  searchQuery: _searchQuery,
   matchedFrames,
   onNodeClick,
   isDiffMode = false,
@@ -32,6 +32,7 @@ export const FlameGraphCanvas: React.FC<FlameGraphCanvasProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
+  const [containerWidth, setContainerWidth] = useState(900);
   const [hoveredNode, setHoveredNode] = useState<FlameGraphNode | null>(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const renderBoxesRef = useRef<RenderBox[]>([]);
@@ -39,58 +40,100 @@ export const FlameGraphCanvas: React.FC<FlameGraphCanvasProps> = ({
   const ROW_HEIGHT = 20;
   const ROW_GAP = 1;
 
-  const renderCanvas = useCallback(() => {
-    const canvas = canvasRef.current;
-    const container = containerRef.current;
-    if (!canvas || !container || !rootNode) return;
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
 
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    const updateWidth = () => {
+      if (el.clientWidth > 0) {
+        setContainerWidth(el.clientWidth);
+      }
+    };
+    updateWidth();
 
-    const width = container.clientWidth || 900;
-    const dpr = window.devicePixelRatio || 1;
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(updateWidth);
+      observer.observe(el);
+      return () => observer.disconnect();
+    }
 
-    // Build D3 hierarchy
-    const hierarchy = d3.hierarchy<FlameGraphNode>(rootNode, (d) => d.children)
-      .sum((d) => (d.children && d.children.length > 0 ? 0 : d.value || 1))
+    window.addEventListener('resize', updateWidth);
+    return () => window.removeEventListener('resize', updateWidth);
+  }, []);
+
+  const layoutData = useMemo(() => {
+    if (!rootNode) {
+      return { boxes: [] as RenderBox[], height: 400 };
+    }
+
+    const hierarchy = d3
+      .hierarchy<FlameGraphNode>(rootNode, (d) => d.children)
+      .sum((d) => {
+        const hasChildren = Boolean(d.children && d.children.length > 0);
+        if (hasChildren) {
+          return d.selfValue || 0;
+        }
+        if (d.value > 0) {
+          return d.value;
+        }
+        if (isDiffMode && d.diffValue != null && d.diffValue < 0) {
+          return Math.abs(d.diffValue);
+        }
+        return d.selfValue || 1;
+      })
       .sort((a, b) => (b.value || 0) - (a.value || 0));
 
     const maxDepth = hierarchy.height;
     const height = Math.max(400, (maxDepth + 2) * (ROW_HEIGHT + ROW_GAP) + 40);
+
+    const partition = d3.partition<FlameGraphNode>().size([containerWidth, height]);
+    const partitionRoot = partition(hierarchy);
+    const boxes: RenderBox[] = [];
+
+    partitionRoot.each((d) => {
+      const x = d.x0;
+      const y = height - (d.depth + 1) * (ROW_HEIGHT + ROW_GAP) - 10;
+      const w = Math.max(1, d.x1 - d.x0 - 0.5);
+      const h = ROW_HEIGHT;
+      boxes.push({ node: d.data, x, y, w, h });
+    });
+
+    return { boxes, height };
+  }, [rootNode, containerWidth, isDiffMode]);
+
+  const renderCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !rootNode) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const width = containerWidth;
+    const height = layoutData.height;
+    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
 
     canvas.width = width * dpr;
     canvas.height = height * dpr;
     canvas.style.width = `${width}px`;
     canvas.style.height = `${height}px`;
 
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
-
-    // D3 Partition Layout
-    const partition = d3.partition<FlameGraphNode>()
-      .size([width, height]);
-
-    const partitionRoot = partition(hierarchy);
-    const boxes: RenderBox[] = [];
 
     ctx.font = '11px "JetBrains Mono", Menlo, monospace';
     ctx.textBaseline = 'middle';
 
-    partitionRoot.each((d) => {
-      // Inverted flame graph (root at bottom, call stack going up) or standard (root at top)
-      // Flame graphs traditionally have root at top (icicle style) or root at bottom
-      const x = d.x0;
-      const y = height - (d.depth + 1) * (ROW_HEIGHT + ROW_GAP) - 10; // bottom-up flame graph
-      const w = Math.max(1, d.x1 - d.x0 - 0.5);
-      const h = ROW_HEIGHT;
+    for (const box of layoutData.boxes) {
+      const { node, x, y, w, h } = box;
+      const isMatch = matchedFrames.has(node.name);
+      const isHovered = hoveredNode === node;
 
-      boxes.push({ node: d.data, x, y, w, h });
-
-      const isMatch = matchedFrames.has(d.data.name);
-      const isHovered = hoveredNode === d.data;
-
-      // Frame Color
-      const fillColor = getFrameColor(d.data.name, d.data.package, isMatch, isDiffMode ? d.data.diffPercent : undefined);
+      const fillColor = getFrameColor(
+        node.name,
+        node.package,
+        isMatch,
+        isDiffMode ? node.diffPercent : undefined
+      );
       ctx.fillStyle = fillColor;
       ctx.fillRect(x, y, w, h);
 
@@ -108,7 +151,6 @@ export const FlameGraphCanvas: React.FC<FlameGraphCanvasProps> = ({
         ctx.strokeRect(x, y, w, h);
       }
 
-      // Render Text Label if width permits
       if (w > 32) {
         ctx.save();
         ctx.beginPath();
@@ -116,20 +158,18 @@ export const FlameGraphCanvas: React.FC<FlameGraphCanvasProps> = ({
         ctx.clip();
 
         ctx.fillStyle = isMatch ? '#18181b' : '#ffffff';
-        const label = `${d.data.name} (${d.data.totalPercent ? d.data.totalPercent.toFixed(1) : '100'}%)`;
+        const pctLabel = node.totalPercent != null ? node.totalPercent.toFixed(1) : '0.0';
+        const label = `${node.name} (${pctLabel}%)`;
         ctx.fillText(label, x + 4, y + h / 2 + 0.5);
         ctx.restore();
       }
-    });
+    }
 
-    renderBoxesRef.current = boxes;
-  }, [rootNode, matchedFrames, hoveredNode, isDiffMode]);
+    renderBoxesRef.current = layoutData.boxes;
+  }, [rootNode, containerWidth, layoutData, matchedFrames, hoveredNode, isDiffMode]);
 
   useEffect(() => {
     renderCanvas();
-    const handleResize = () => renderCanvas();
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
   }, [renderCanvas]);
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {

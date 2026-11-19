@@ -1,8 +1,8 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { TraceTreeResponse, TraceTreeNode, SpanRecord } from '../types/trace';
-import { LayoutSpanItem } from '../lib/workers/trace-tree.worker';
+import { TraceTreeResponse, SpanRecord } from '../types/trace';
+import { flattenTraceTree, LayoutSpanItem } from '../lib/utils/waterfall-layout';
 
 export function useTraceWaterfall(traceId: string) {
   const [traceData, setTraceData] = useState<TraceTreeResponse | null>(null);
@@ -12,23 +12,27 @@ export function useTraceWaterfall(traceId: string) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    setSelectedSpan(null);
+    setCollapsedSpans(new Set());
+  }, [traceId]);
+
   const fetchTrace = useCallback(async () => {
     if (!traceId) return;
     setIsLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/v1/traces/${traceId}`);
+      const res = await fetch(`/api/v1/traces/${encodeURIComponent(traceId)}`);
       if (!res.ok) throw new Error(`Trace not found: ${res.statusText}`);
       const json: TraceTreeResponse = await res.json();
       setTraceData(json);
 
       if (json.root) {
-        const items: LayoutSpanItem[] = [];
-        flattenTree(json.root, 0, json.root.startTimeUnixNano, json.totalDurationMs, items, new Set());
+        const items = flattenTraceTree(json.root, json.traceId || traceId, json.totalDurationMs, new Set());
         setLayoutItems(items);
-        if (!selectedSpan && json.root.spanId) {
+        if (json.root.spanId) {
           setSelectedSpan({
-            traceId: json.traceId,
+            traceId: json.traceId || traceId,
             spanId: json.root.spanId,
             parentSpanId: json.root.parentSpanId,
             serviceName: json.root.serviceName,
@@ -39,7 +43,12 @@ export function useTraceWaterfall(traceId: string) {
             statusCode: json.root.statusCode,
             attributes: json.root.attributes,
           });
+        } else {
+          setSelectedSpan(null);
         }
+      } else {
+        setLayoutItems([]);
+        setSelectedSpan(null);
       }
     } catch (err: any) {
       console.error('Error loading trace:', err);
@@ -65,10 +74,10 @@ export function useTraceWaterfall(traceId: string) {
   // Re-flatten when collapsed spans change
   useEffect(() => {
     if (!traceData?.root) return;
-    const items: LayoutSpanItem[] = [];
-    flattenTree(traceData.root, 0, traceData.root.startTimeUnixNano, traceData.totalDurationMs, items, collapsedSpans);
-    setLayoutItems(items);
-  }, [traceData, collapsedSpans]);
+    setLayoutItems(
+      flattenTraceTree(traceData.root, traceData.traceId || traceId, traceData.totalDurationMs, collapsedSpans)
+    );
+  }, [traceData, traceId, collapsedSpans]);
 
   return {
     traceData,
@@ -81,52 +90,4 @@ export function useTraceWaterfall(traceId: string) {
     toggleCollapse,
     refetch: fetchTrace,
   };
-}
-
-function flattenTree(
-  node: TraceTreeNode,
-  depth: number,
-  traceStartNano: number,
-  totalDurationMs: number,
-  results: LayoutSpanItem[],
-  collapsedSet: Set<string>
-) {
-  if (!node || !node.spanId) return;
-
-  const startOffsetMs = Math.max(0, (node.startTimeUnixNano - traceStartNano) / 1_000_000.0);
-  const spanDurationMs = node.durationMs || node.durationNano / 1_000_000.0;
-
-  const leftPercent = totalDurationMs > 0 ? (startOffsetMs / totalDurationMs) * 100 : 0;
-  const widthPercent = totalDurationMs > 0 ? Math.max(0.5, (spanDurationMs / totalDurationMs) * 100) : 100;
-
-  const spanRecord: SpanRecord = {
-    traceId: '',
-    spanId: node.spanId,
-    parentSpanId: node.parentSpanId,
-    serviceName: node.serviceName,
-    operationName: node.operationName,
-    startTimeUnixNano: node.startTimeUnixNano,
-    durationMs: spanDurationMs,
-    durationNano: node.durationNano,
-    statusCode: node.statusCode,
-    attributes: node.attributes,
-  };
-
-  const hasChildren = Boolean(node.children && node.children.length > 0);
-
-  results.push({
-    span: spanRecord,
-    depth,
-    leftPercent: Math.min(100, Math.max(0, leftPercent)),
-    widthPercent: Math.min(100 - leftPercent, Math.max(0.2, widthPercent)),
-    isCriticalPath: node.isCriticalPath,
-    exclusiveTimePercent: node.exclusiveTimePercent,
-    hasChildren,
-  });
-
-  if (hasChildren && !collapsedSet.has(node.spanId)) {
-    for (const child of node.children) {
-      flattenTree(child, depth + 1, traceStartNano, totalDurationMs, results, collapsedSet);
-    }
-  }
 }

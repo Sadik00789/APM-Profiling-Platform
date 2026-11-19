@@ -41,10 +41,20 @@ export default function OverviewPage() {
 
     const interval = setInterval(() => {
       loadHealth();
+      loadHistogram();
     }, 5000);
 
     return () => clearInterval(interval);
   }, []);
+
+  const servicesList = healthData?.services || [
+    { serviceName: 'api-gateway', rps: 350.5, p50Ms: 12.0, p95Ms: 45.0, p99Ms: 92.0, errorRatePercent: 0.12, status: 'HEALTHY' as const },
+    { serviceName: 'order-service', rps: 245.0, p50Ms: 28.0, p95Ms: 120.0, p99Ms: 280.0, errorRatePercent: 0.45, status: 'HEALTHY' as const },
+    { serviceName: 'payment-service', rps: 120.2, p50Ms: 65.0, p95Ms: 185.0, p99Ms: 420.0, errorRatePercent: 1.2, status: 'HEALTHY' as const },
+    { serviceName: 'inventory-service', rps: 240.0, p50Ms: 8.0, p95Ms: 24.0, p99Ms: 52.0, errorRatePercent: 0.05, status: 'HEALTHY' as const },
+  ];
+  const healthyCount = servicesList.filter((s) => s.status === 'HEALTHY').length;
+  const healthyPercent = servicesList.length > 0 ? Math.round((healthyCount / servicesList.length) * 100) : 100;
 
   return (
     <div className="space-y-6">
@@ -121,9 +131,11 @@ export default function OverviewPage() {
         <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-4 shadow-lg backdrop-blur-md">
           <div className="text-xs font-medium text-zinc-400">Active Services</div>
           <div className="text-2xl font-bold font-mono text-zinc-100 mt-1">
-            {healthData?.services.length || 4} Microservices
+            {servicesList.length} Microservices
           </div>
-          <div className="text-[11px] text-zinc-500 mt-1 font-mono">100% Healthy Mesh</div>
+          <div className="text-[11px] text-zinc-500 mt-1 font-mono">
+            {healthyPercent}% Healthy Mesh ({healthyCount}/{servicesList.length})
+          </div>
         </div>
 
         <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-4 shadow-lg backdrop-blur-md">
@@ -151,19 +163,21 @@ export default function OverviewPage() {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {(healthData?.services || [
-              { serviceName: 'api-gateway', rps: 350.5, p50Ms: 12.0, p95Ms: 45.0, p99Ms: 92.0, errorRatePercent: 0.12, status: 'HEALTHY' as const },
-              { serviceName: 'order-service', rps: 245.0, p50Ms: 28.0, p95Ms: 120.0, p99Ms: 280.0, errorRatePercent: 0.45, status: 'HEALTHY' as const },
-              { serviceName: 'payment-service', rps: 120.2, p50Ms: 65.0, p95Ms: 185.0, p99Ms: 420.0, errorRatePercent: 1.20, status: 'HEALTHY' as const },
-              { serviceName: 'inventory-service', rps: 240.0, p50Ms: 8.0, p95Ms: 24.0, p99Ms: 52.0, errorRatePercent: 0.05, status: 'HEALTHY' as const },
-            ]).map((s) => (
+            {servicesList.map((s) => {
+              const badgeStyle =
+                s.status === 'CRITICAL'
+                  ? 'bg-red-500/15 text-red-400 border-red-500/30'
+                  : s.status === 'DEGRADED'
+                  ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+                  : 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30';
+              return (
               <div
                 key={s.serviceName}
                 className="bg-zinc-900/80 border border-zinc-800 rounded-xl p-4 shadow-sm hover:border-zinc-700 transition-colors"
               >
                 <div className="flex items-center justify-between mb-2">
                   <span className="font-mono font-semibold text-xs text-zinc-200">{s.serviceName}</span>
-                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                  <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${badgeStyle}`}>
                     {s.status}
                   </span>
                 </div>
@@ -198,7 +212,8 @@ export default function OverviewPage() {
                   </Link>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
 
           {histogramData && <LatencyHistogram histogram={histogramData} />}

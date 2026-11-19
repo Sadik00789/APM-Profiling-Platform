@@ -1,20 +1,57 @@
 'use client';
 
-import React, { useState } from 'react';
-import { Flame, Layers, GitCompare, Info } from 'lucide-react';
+import React, { Suspense, useState, useEffect, useMemo } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
+import { Flame, Clock, X } from 'lucide-react';
 import { ProfileType } from '../../types/profile';
 import { useFlameGraphData } from '../../hooks/useFlameGraphData';
 import { FlameGraphHeader } from '../../components/flamegraph/FlameGraphHeader';
 import { FlameGraphCanvas } from '../../components/flamegraph/FlameGraphCanvas';
 import { DiffFlameGraph } from '../../components/flamegraph/DiffFlameGraph';
-import { formatNumber } from '../../lib/utils/formatters';
+import { formatDateTime, formatNumber } from '../../lib/utils/formatters';
 
-export default function ContinuousProfilingPage() {
-  const [selectedService, setSelectedService] = useState('order-service');
+const BASE_SERVICES = ['order-service', 'payment-service', 'api-gateway', 'inventory-service', 'notification-service'];
+
+function parsePositiveInt(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
+}
+
+function ProfilingContent() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  const paramService = searchParams.get('service');
+  const paramFrom = parsePositiveInt(searchParams.get('from'));
+  const paramTo = parsePositiveInt(searchParams.get('to'));
+
+  const [selectedService, setSelectedService] = useState(paramService || 'order-service');
   const [profileType, setProfileType] = useState<ProfileType>('CPU');
   const [isDiffMode, setIsDiffMode] = useState(false);
+  const [fromTimestampSec, setFromTimestampSec] = useState<number | undefined>(paramFrom);
+  const [untilTimestampSec, setUntilTimestampSec] = useState<number | undefined>(paramTo);
 
-  const services = ['order-service', 'payment-service', 'api-gateway', 'inventory-service'];
+  useEffect(() => {
+    if (paramService) {
+      setSelectedService(paramService);
+    }
+    setFromTimestampSec(paramFrom);
+    setUntilTimestampSec(paramTo);
+  }, [paramService, paramFrom, paramTo]);
+
+  const services = useMemo(() => {
+    if (selectedService && !BASE_SERVICES.includes(selectedService)) {
+      return [selectedService, ...BASE_SERVICES];
+    }
+    return BASE_SERVICES;
+  }, [selectedService]);
+
+  const clearTimeWindow = () => {
+    setFromTimestampSec(undefined);
+    setUntilTimestampSec(undefined);
+    router.replace(`/profiling?service=${encodeURIComponent(selectedService)}`);
+  };
 
   const {
     data,
@@ -32,6 +69,8 @@ export default function ContinuousProfilingPage() {
   } = useFlameGraphData({
     service: selectedService,
     profileType,
+    fromTimestampSec,
+    untilTimestampSec,
   });
 
   return (
@@ -48,21 +87,40 @@ export default function ContinuousProfilingPage() {
           </p>
         </div>
 
-        {data && (
-          <div className="flex items-center gap-3 text-xs font-mono text-zinc-400">
-            <span>
-              Total Samples: <strong className="text-zinc-200">{formatNumber(data.totalSamples)}</strong>
-            </span>
-            <span>•</span>
-            <span>
-              Tree Depth: <strong className="text-zinc-200">{data.maxDepth}</strong>
-            </span>
-            <span>•</span>
-            <span>
-              Nodes: <strong className="text-zinc-200">{data.totalNodes}</strong>
-            </span>
-          </div>
-        )}
+        <div className="flex flex-wrap items-center gap-3">
+          {(fromTimestampSec || untilTimestampSec) && (
+            <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs font-mono">
+              <Clock className="w-3.5 h-3.5" />
+              <span>
+                Window: {fromTimestampSec ? formatDateTime(fromTimestampSec) : 'start'} –{' '}
+                {untilTimestampSec ? formatDateTime(untilTimestampSec) : 'now'}
+              </span>
+              <button
+                onClick={clearTimeWindow}
+                title="Clear time window filter"
+                className="hover:text-amber-100 ml-1"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {data && (
+            <div className="flex items-center gap-3 text-xs font-mono text-zinc-400">
+              <span>
+                Total Samples: <strong className="text-zinc-200">{formatNumber(data.totalSamples)}</strong>
+              </span>
+              <span>•</span>
+              <span>
+                Tree Depth: <strong className="text-zinc-200">{data.maxDepth}</strong>
+              </span>
+              <span>•</span>
+              <span>
+                Nodes: <strong className="text-zinc-200">{data.totalNodes}</strong>
+              </span>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Flame Graph Controls Header */}
@@ -105,19 +163,19 @@ export default function ContinuousProfilingPage() {
             isDiffMode={false}
           />
 
-          <div className="flex items-center justify-between text-[11px] text-zinc-500 font-mono px-2">
-            <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-500 font-mono px-2">
+            <div className="flex flex-wrap items-center gap-4">
               <span className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-sm bg-[#e8590c]"></span> Application Code (com.apm.*)
+                <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: 'hsl(18, 85%, 54%)' }}></span> Application Code (com.apm.*)
               </span>
               <span className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-sm bg-[#0ca678]"></span> Framework & Netty
+                <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: 'hsl(192, 80%, 42%)' }}></span> Framework & Netty
               </span>
               <span className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-sm bg-[#f59f00]"></span> Core JVM Runtime
+                <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: 'hsl(38, 80%, 50%)' }}></span> Core JVM Runtime
               </span>
               <span className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-sm bg-[#7950f2]"></span> ClickHouse & Database
+                <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: 'hsl(270, 70%, 55%)' }}></span> ClickHouse & Database
               </span>
             </div>
             <span>Click any stack frame to zoom in • Hover to inspect samples</span>
@@ -129,5 +187,19 @@ export default function ContinuousProfilingPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function ContinuousProfilingPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="h-96 flex items-center justify-center bg-zinc-950/80 rounded-xl border border-zinc-800 text-zinc-400 text-xs font-mono">
+          Loading profiling workspace...
+        </div>
+      }
+    >
+      <ProfilingContent />
+    </Suspense>
   );
 }

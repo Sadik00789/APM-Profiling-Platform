@@ -27,16 +27,33 @@ export function useLiveTelemetryStream(enabled = true, maxEvents = 100) {
   const [anomalyAlerts, setAnomalyAlerts] = useState<LatencyAnomalyAlert[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isMountedRef = useRef(true);
+  const enabledRef = useRef(enabled);
+
+  const cleanupConnection = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+  }, []);
 
   const connect = useCallback(() => {
-    if (!enabled) return;
+    cleanupConnection();
+    if (!enabledRef.current || !isMountedRef.current) return;
 
     try {
       const es = new EventSource('/api/v1/stream/live');
       eventSourceRef.current = es;
 
       es.onopen = () => {
-        setIsConnected(true);
+        if (isMountedRef.current && enabledRef.current) {
+          setIsConnected(true);
+        }
       };
 
       es.addEventListener('span', (event: MessageEvent) => {
@@ -60,32 +77,41 @@ export function useLiveTelemetryStream(enabled = true, maxEvents = 100) {
       es.onerror = () => {
         setIsConnected(false);
         es.close();
-        // Reconnect after 3 seconds
-        setTimeout(connect, 3000);
+        if (eventSourceRef.current === es) {
+          eventSourceRef.current = null;
+        }
+        if (isMountedRef.current && enabledRef.current) {
+          if (reconnectTimerRef.current) {
+            clearTimeout(reconnectTimerRef.current);
+          }
+          reconnectTimerRef.current = setTimeout(() => {
+            reconnectTimerRef.current = null;
+            connect();
+          }, 3000);
+        }
       };
     } catch (e) {
       console.debug('SSE connection error:', e);
       setIsConnected(false);
     }
-  }, [enabled, maxEvents]);
+  }, [cleanupConnection, maxEvents]);
 
   useEffect(() => {
+    isMountedRef.current = true;
+    enabledRef.current = enabled;
+
     if (enabled) {
       connect();
     } else {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-        eventSourceRef.current = null;
-      }
+      cleanupConnection();
       setIsConnected(false);
     }
 
     return () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-      }
+      isMountedRef.current = false;
+      cleanupConnection();
     };
-  }, [enabled, connect]);
+  }, [enabled, connect, cleanupConnection]);
 
   const clearAlerts = useCallback(() => {
     setAnomalyAlerts([]);

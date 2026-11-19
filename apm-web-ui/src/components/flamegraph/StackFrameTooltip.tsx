@@ -14,12 +14,17 @@ interface StackFrameTooltipProps {
 export const StackFrameTooltip: React.FC<StackFrameTooltipProps> = ({ node, x, y, visible }) => {
   if (!visible || !node) return null;
 
+  const winW = typeof window !== 'undefined' ? window.innerWidth : 1200;
+  const winH = typeof window !== 'undefined' ? window.innerHeight : 800;
+  const left = Math.max(8, Math.min(winW - 320, x + 12));
+  const top = Math.max(8, Math.min(winH - 180, y + 12));
+
   return (
     <div
       className="fixed z-50 pointer-events-none transition-transform duration-75 ease-out shadow-2xl rounded-xl border border-zinc-700/60 bg-zinc-900/95 backdrop-blur-md px-4 py-3 text-xs text-zinc-100 max-w-md"
       style={{
-        left: `${Math.min(window.innerWidth - 320, x + 12)}px`,
-        top: `${Math.min(window.innerHeight - 180, y + 12)}px`,
+        left: `${left}px`,
+        top: `${top}px`,
       }}
     >
       <div className="font-mono font-semibold text-amber-400 break-words mb-1 text-sm">

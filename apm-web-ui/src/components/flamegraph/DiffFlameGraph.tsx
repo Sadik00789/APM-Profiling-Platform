@@ -1,10 +1,10 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { DiffFlameGraphResponse, ProfileType } from '../../types/profile';
+import { DiffFlameGraphResponse, FlameGraphNode, ProfileType } from '../../types/profile';
 import { FlameGraphCanvas } from './FlameGraphCanvas';
 import { formatNumber, formatPercent } from '../../lib/utils/formatters';
-import { GitCompare, TrendingUp, TrendingDown, Clock, Search, Calendar, ChevronDown } from 'lucide-react';
+import { GitCompare, TrendingUp, TrendingDown, Search, ArrowLeft, RotateCcw, AlertCircle } from 'lucide-react';
 
 interface DiffFlameGraphProps {
   service: string;
@@ -13,6 +13,8 @@ interface DiffFlameGraphProps {
 
 export const DiffFlameGraph: React.FC<DiffFlameGraphProps> = ({ service, profileType }) => {
   const [diffData, setDiffData] = useState<DiffFlameGraphResponse | null>(null);
+  const [currentRoot, setCurrentRoot] = useState<FlameGraphNode | null>(null);
+  const [zoomStack, setZoomStack] = useState<FlameGraphNode[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -55,6 +57,8 @@ export const DiffFlameGraph: React.FC<DiffFlameGraphProps> = ({ service, profile
       if (!res.ok) throw new Error(`Failed to load diff: ${res.statusText}`);
       const json: DiffFlameGraphResponse = await res.json();
       setDiffData(json);
+      setCurrentRoot(json.root || null);
+      setZoomStack([]);
     } catch (err: any) {
       console.error('Diff error:', err);
       setError(err.message || 'Failed to calculate profile diff');
@@ -66,6 +70,32 @@ export const DiffFlameGraph: React.FC<DiffFlameGraphProps> = ({ service, profile
   useEffect(() => {
     fetchDiff();
   }, [fetchDiff]);
+
+  const zoomIntoNode = useCallback(
+    (node: FlameGraphNode) => {
+      if (node === currentRoot) return;
+      setZoomStack((prev) => [...prev, currentRoot || node]);
+      setCurrentRoot(node);
+    },
+    [currentRoot]
+  );
+
+  const popZoom = useCallback(() => {
+    setZoomStack((prev) => {
+      if (prev.length === 0) return prev;
+      const next = [...prev];
+      const prevRoot = next.pop();
+      if (prevRoot) setCurrentRoot(prevRoot);
+      return next;
+    });
+  }, []);
+
+  const resetZoom = useCallback(() => {
+    if (diffData?.root) {
+      setCurrentRoot(diffData.root);
+      setZoomStack([]);
+    }
+  }, [diffData]);
 
   // Update search match set
   useEffect(() => {
@@ -199,14 +229,45 @@ export const DiffFlameGraph: React.FC<DiffFlameGraphProps> = ({ service, profile
         <div className="h-96 flex items-center justify-center bg-zinc-950/60 rounded-xl border border-zinc-800 text-zinc-400 text-xs font-mono">
           Calculating differential call stack profile across time windows...
         </div>
-      ) : diffData?.root ? (
-        <FlameGraphCanvas
-          rootNode={diffData.root}
-          searchQuery={searchQuery}
-          matchedFrames={matchedFrames}
-          onNodeClick={() => {}}
-          isDiffMode={true}
-        />
+      ) : error ? (
+        <div className="p-8 flex items-center justify-center gap-2 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-xs font-mono">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span>{error}</span>
+        </div>
+      ) : (currentRoot || diffData?.root) ? (
+        <div className="space-y-2">
+          {zoomStack.length > 0 && (
+            <div className="flex items-center justify-between bg-zinc-900/90 border border-zinc-800 rounded-xl px-4 py-2 text-xs font-mono">
+              <div className="flex items-center gap-2 text-zinc-300 truncate">
+                <button
+                  onClick={popZoom}
+                  className="flex items-center gap-1 text-purple-300 hover:text-purple-200 bg-purple-500/15 px-2 py-0.5 rounded border border-purple-500/30"
+                >
+                  <ArrowLeft className="w-3 h-3" />
+                  Back
+                </button>
+                <span className="text-zinc-500">Zoomed into:</span>
+                <span className="font-semibold text-purple-300 truncate max-w-lg">
+                  {currentRoot?.name}
+                </span>
+              </div>
+              <button
+                onClick={resetZoom}
+                className="flex items-center gap-1 text-zinc-400 hover:text-zinc-200 text-xs px-2 py-0.5 rounded bg-zinc-800 border border-zinc-700"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Reset Zoom
+              </button>
+            </div>
+          )}
+          <FlameGraphCanvas
+            rootNode={currentRoot || diffData!.root}
+            searchQuery={searchQuery}
+            matchedFrames={matchedFrames}
+            onNodeClick={zoomIntoNode}
+            isDiffMode={true}
+          />
+        </div>
       ) : (
         <div className="p-12 text-center bg-zinc-950 rounded-xl border border-zinc-800 text-zinc-500 text-xs font-mono">
           No differential profiling samples available for this period.

@@ -1,5 +1,6 @@
 export function formatDuration(ms: number): string {
-  if (ms == null || isNaN(ms)) return '0 ms';
+  if (ms == null || isNaN(ms) || ms < 0) return '0 ms';
+  if (ms === 0) return '0 ms';
   if (ms < 0.001) {
     return `${(ms * 1_000_000).toFixed(0)} ns`;
   }
@@ -23,8 +24,10 @@ export function formatPercent(pct: number): string {
 
 export function formatNumber(num: number): string {
   if (num == null || isNaN(num)) return '0';
-  if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
-  if (num >= 1_000) return `${(num / 1_000).toFixed(1)}k`;
+  const abs = Math.abs(num);
+  const sign = num < 0 ? '-' : '';
+  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(1)}k`;
   return num.toLocaleString();
 }
 

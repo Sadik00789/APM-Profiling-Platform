@@ -2,9 +2,8 @@
 
 import React, { useRef, useEffect, useState } from 'react';
 import * as d3 from 'd3';
-import { ServiceTopologyNode, ServiceTopologyEdge, ServiceTopologyResponse } from '../../types/trace';
-import { Server, Database, Globe, Activity, Zap, RefreshCw } from 'lucide-react';
-import { formatNumber } from '../../lib/utils/formatters';
+import { ServiceTopologyNode, ServiceTopologyResponse } from '../../types/trace';
+import { Activity, RefreshCw, X } from 'lucide-react';
 
 interface ServiceDependencyMapProps {
   topologyData: ServiceTopologyResponse | null;
@@ -17,6 +16,12 @@ export const ServiceDependencyMap: React.FC<ServiceDependencyMapProps> = ({ topo
   const [selectedNode, setSelectedNode] = useState<ServiceTopologyNode | null>(null);
 
   useEffect(() => {
+    if (!topologyData || !selectedNode) return;
+    const updated = topologyData.nodes.find((n) => n.id === selectedNode.id) || null;
+    setSelectedNode(updated);
+  }, [topologyData]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
     if (!topologyData || !svgRef.current || !containerRef.current) return;
 
     const width = containerRef.current.clientWidth || 900;
@@ -25,9 +30,12 @@ export const ServiceDependencyMap: React.FC<ServiceDependencyMapProps> = ({ topo
     const svg = d3.select(svgRef.current);
     svg.selectAll('*').remove();
 
-    // Create deep copies of nodes and edges for D3 simulation mutation
+    // Create deep copies of nodes and valid edges for D3 simulation mutation
     const nodes: (ServiceTopologyNode & d3.SimulationNodeDatum)[] = topologyData.nodes.map((d) => ({ ...d }));
-    const edges = topologyData.edges.map((d) => ({ ...d }));
+    const nodeIds = new Set(nodes.map((n) => n.id));
+    const edges = topologyData.edges
+      .filter((e) => nodeIds.has(e.source) && nodeIds.has(e.target))
+      .map((d) => ({ ...d }));
 
     // Container Group for D3 Zoom
     const g = svg.append('g');
@@ -213,11 +221,20 @@ export const ServiceDependencyMap: React.FC<ServiceDependencyMapProps> = ({ topo
         {/* Selected Node Overlay Badge */}
         {selectedNode && (
           <div className="absolute bottom-4 left-4 bg-zinc-900/95 border border-zinc-700/80 rounded-xl p-4 shadow-xl text-xs font-mono max-w-xs backdrop-blur-md">
-            <div className="flex items-center justify-between font-bold text-amber-400 mb-1">
+            <div className="flex items-center justify-between gap-2 font-bold text-amber-400 mb-1">
               <span>{selectedNode.name}</span>
-              <span className="uppercase text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300">
-                {selectedNode.type}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="uppercase text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300">
+                  {selectedNode.type}
+                </span>
+                <button
+                  onClick={() => setSelectedNode(null)}
+                  title="Close node details"
+                  className="p-0.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
             <div className="space-y-1 text-zinc-300 mt-2">
               <div>Throughput: <span className="text-zinc-100 font-semibold">{selectedNode.rps} req/sec</span></div>
