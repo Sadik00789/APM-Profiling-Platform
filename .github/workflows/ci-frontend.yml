@@ -28,8 +28,11 @@ jobs:
       - name: Install Dependencies
         run: npm ci || npm install
 
+      - name: Run Frontend Unit Tests
+        run: npm test
+
       - name: Typecheck TypeScript Code
-        run: npx tsc --noEmit
+        run: npx next typegen && npx tsc --noEmit
 
       - name: Build Next.js Production Bundle
         run: npm run build

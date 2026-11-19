@@ -4,12 +4,12 @@ CREATE TABLE IF NOT EXISTS default.service_latency_1m
     minute_time DateTime('UTC') CODEC(DoubleDelta, ZSTD(3)),
     service_name LowCardinality(String) CODEC(ZSTD(1)),
     operation_name LowCardinality(String) CODEC(ZSTD(1)),
-    total_spans UInt64 CODEC(T64, ZSTD(3)),
-    error_spans UInt64 CODEC(T64, ZSTD(3)),
+    total_spans SimpleAggregateFunction(sum, UInt64) CODEC(T64, ZSTD(3)),
+    error_spans SimpleAggregateFunction(sum, UInt64) CODEC(T64, ZSTD(3)),
     duration_quantiles AggregateFunction(quantilesExact(0.50, 0.95, 0.99), UInt64)
 )
 ENGINE = AggregatingMergeTree()
-PARTITION BY toDate(minute_time)
+PARTITION BY toYYYYMMDD(minute_time)
 PRIMARY KEY (service_name, operation_name)
 ORDER BY (service_name, operation_name, minute_time)
 TTL minute_time + INTERVAL 30 DAY;
@@ -18,7 +18,7 @@ TTL minute_time + INTERVAL 30 DAY;
 CREATE MATERIALIZED VIEW IF NOT EXISTS default.mv_service_latency_1m
 TO default.service_latency_1m AS
 SELECT
-    toStartOfMinute(toDateTime(timestamp)) AS minute_time,
+    toStartOfMinute(toDateTime(start_time)) AS minute_time,
     service_name,
     operation_name,
     count() AS total_spans,
@@ -38,10 +38,10 @@ CREATE TABLE IF NOT EXISTS default.service_dependencies_1m
     child_service LowCardinality(String) CODEC(ZSTD(1)),
     call_count UInt64 CODEC(T64, ZSTD(3)),
     error_count UInt64 CODEC(T64, ZSTD(3)),
-    avg_latency_nano UInt64 CODEC(T64, ZSTD(3))
+    total_latency_nano UInt64 CODEC(T64, ZSTD(3))
 )
-ENGINE = SummingMergeTree((call_count, error_count, avg_latency_nano))
-PARTITION BY toDate(minute_time)
+ENGINE = SummingMergeTree((call_count, error_count, total_latency_nano))
+PARTITION BY toYYYYMMDD(minute_time)
 PRIMARY KEY (parent_service, child_service)
 ORDER BY (parent_service, child_service, minute_time)
 TTL minute_time + INTERVAL 30 DAY;

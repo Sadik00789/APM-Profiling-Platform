@@ -98,6 +98,7 @@ apm-profiling-platform/
 ├── deploy/
 │   ├── clickhouse/init/      # ClickHouse DDL schemas, MergeTree tables, Materialized Views
 │   └── docker/               # Multi-stage Dockerfiles (Java 21 JRE & Next.js standalone)
+├── docker/clickhouse/        # Local Docker Compose ClickHouse init SQL & user config
 ├── docker-compose.yml        # ClickHouse Alpine & Redis Alpine orchestration
 └── Makefile                  # Operational targets for build, test, and run
 ```
@@ -107,7 +108,7 @@ apm-profiling-platform/
 ## ⚡ Quickstart Guide
 
 ### Prerequisites
-- **Java 21 LTS** (`openjdk-21-jdk`)
+- **Java 21 LTS** (`openjdk-21-jdk` or `scoop install temurin21-jdk` on Windows)
 - **Node.js 20+** & **npm**
 - **Docker** & **Docker Compose**
 
@@ -120,7 +121,8 @@ make start
 ### 2. Build Backend Multi-Project & Compile Protobufs
 ```bash
 make build
-# Or: ./gradlew build
+# Linux/macOS: ./gradlew build
+# Windows PowerShell: .\gradlew.bat build
 ```
 
 ### 3. Start APM Collector Service (Port 8080)
@@ -141,62 +143,94 @@ make ui-dev
 ```
 Open **[http://localhost:3000](http://localhost:3000)** in your browser.
 
+### 6. Run Tests & Validation
+```bash
+# Backend unit & integration tests (Linux/macOS / Windows)
+./gradlew test
+.\gradlew.bat test
+
+# Frontend unit tests, TypeScript check & production build
+cd apm-web-ui
+npm test
+npm run typecheck
+npm run build
+```
+
 ---
 
 ## 📊 ClickHouse Schema & Materialized Views
 
 ### Spans Columnar Table (`default.traces_spans`)
 ```sql
-CREATE TABLE default.traces_spans
+CREATE TABLE IF NOT EXISTS default.traces_spans
 (
-    timestamp DateTime64(6, 'UTC') CODEC(DoubleDelta, ZSTD(3)),
     trace_id String CODEC(ZSTD(1)),
     span_id String CODEC(ZSTD(1)),
     parent_span_id String CODEC(ZSTD(1)),
     service_name LowCardinality(String) CODEC(ZSTD(1)),
     operation_name LowCardinality(String) CODEC(ZSTD(1)),
+    span_kind LowCardinality(String) CODEC(ZSTD(1)),
+    start_time DateTime64(6, 'UTC') CODEC(DoubleDelta, ZSTD(3)),
+    end_time DateTime64(6, 'UTC') CODEC(DoubleDelta, ZSTD(3)),
     duration_nano UInt64 CODEC(T64, ZSTD(3)),
     status_code LowCardinality(String) CODEC(ZSTD(1)),
-    attributes Map(String, String) CODEC(ZSTD(3))
+    status_message String CODEC(ZSTD(1)),
+    attributes Map(String, String) CODEC(ZSTD(3)),
+    events Array(Tuple(DateTime64(6, 'UTC'), String, Map(String, String))),
+    INDEX idx_trace_id trace_id TYPE bloom_filter(0.01) GRANULARITY 1,
+    INDEX idx_span_id span_id TYPE bloom_filter(0.01) GRANULARITY 1,
+    INDEX idx_duration duration_nano TYPE minmax GRANULARITY 1
 )
 ENGINE = MergeTree()
-PARTITION BY toDate(timestamp)
-PRIMARY KEY (service_name, status_code)
-ORDER BY (service_name, status_code, timestamp, trace_id);
+PARTITION BY toYYYYMMDD(start_time)
+ORDER BY (service_name, start_time, trace_id, span_id)
+TTL toDateTime(start_time) + INTERVAL 14 DAY
+SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 ```
 
 ### Continuous Profiling Samples (`default.profiles_samples`)
 ```sql
-CREATE TABLE default.profiles_samples
+CREATE TABLE IF NOT EXISTS default.profiles_samples
 (
-    timestamp DateTime64(0, 'UTC') CODEC(DoubleDelta, ZSTD(3)),
+    profile_id UUID DEFAULT generateUUIDv4(),
     service_name LowCardinality(String) CODEC(ZSTD(1)),
     profile_type LowCardinality(String) CODEC(ZSTD(1)),
+    sample_timestamp DateTime64(6, 'UTC') CODEC(DoubleDelta, ZSTD(3)),
+    duration_nano UInt64 CODEC(T64, ZSTD(3)),
+    value Int64 CODEC(T64, ZSTD(3)),
+    unit LowCardinality(String) CODEC(ZSTD(1)),
     stack_trace String CODEC(ZSTD(6)),
-    sample_count SimpleAggregateFunction(sum, UInt64) CODEC(T64, ZSTD(3))
+    labels Map(String, String) CODEC(ZSTD(3)),
+    INDEX idx_service service_name TYPE set(100) GRANULARITY 1,
+    INDEX idx_profile_type profile_type TYPE set(10) GRANULARITY 1
 )
-ENGINE = AggregatingMergeTree()
-PARTITION BY toDate(timestamp)
+ENGINE = MergeTree()
+PARTITION BY toYYYYMMDD(sample_timestamp)
 PRIMARY KEY (service_name, profile_type)
-ORDER BY (service_name, profile_type, timestamp, stack_trace);
+ORDER BY (service_name, profile_type, sample_timestamp, stack_trace)
+TTL toDateTime(sample_timestamp) + INTERVAL 14 DAY
+SETTINGS index_granularity = 8192;
 ```
 
 ---
 
 ## 📡 REST & Streaming API Endpoints
 
-| Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| `POST` | `/v1/traces` | High-throughput OTLP JSON & Protobuf trace ingestion |
-| `POST` | `/ingest` | Pyroscope folded stack profile push endpoint |
-| `GET` | `/api/v1/traces` | Filterable span search (service, duration, status, operation) |
-| `GET` | `/api/v1/traces/{traceId}` | Single trace execution DAG & Critical Path bottleneck analysis |
-| `GET` | `/api/v1/profiles/flamegraph` | Aggregated D3 nested JSON flame graph tree for any service |
-| `GET` | `/api/v1/profiles/diff` | Differential profile comparison (Baseline A vs Incident B) |
-| `GET` | `/api/v1/topology` | Inter-service RPC communication graph and live throughput matrix |
-| `GET` | `/api/v1/stream/live` | Server-Sent Events (SSE) live telemetry feed |
-| `POST` | `/api/chaos/inject` | Inject dynamic fault scenario (`CPU_SPIKE`, `DB_LATENCY`, `ERROR_STORM`) |
-| `POST` | `/api/chaos/reset` | Reset all chaos injection back to healthy baseline |
+| Method | Endpoint | Service | Description |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/v1/traces` | Collector (`8080`) | High-throughput OTLP JSON & Protobuf trace ingestion |
+| `POST` | `/ingest` | Collector (`8080`) | Pyroscope folded stack profile push endpoint |
+| `GET` | `/api/v1/traces` | Collector (`8080`) | Filterable span search (service, duration, status, operation) |
+| `GET` | `/api/v1/traces/{traceId}` | Collector (`8080`) | Single trace execution DAG & Critical Path bottleneck analysis |
+| `GET` | `/api/v1/profiles/flamegraph` | Collector (`8080`) | Aggregated D3 nested JSON flame graph tree for any service |
+| `GET` | `/api/v1/profiles/diff` | Collector (`8080`) | Differential profile comparison (Baseline A vs Incident B) |
+| `GET` | `/api/v1/topology` | Collector (`8080`) | Inter-service RPC communication graph and live throughput matrix |
+| `GET` | `/api/v1/services/health` | Collector (`8080`) | Cluster-wide RPS, error rate, and per-service percentile summary |
+| `GET` | `/api/v1/metrics/histogram` | Collector (`8080`) | Service latency distribution buckets and P50/P95/P99 percentiles |
+| `GET` | `/api/v1/stream/live` | Collector (`8080`) | Server-Sent Events (SSE) live telemetry & anomaly alert feed |
+| `POST` | `/api/chaos/inject` | Agent (`8081` / UI Proxy) | Inject dynamic fault scenario (`CPU_SPIKE`, `DB_LATENCY`, `ERROR_STORM`) |
+| `POST` | `/api/chaos/reset` | Agent (`8081` / UI Proxy) | Reset all chaos injection back to healthy baseline |
+| `GET` | `/api/chaos/status` | Agent (`8081` / UI Proxy) | Query active chaos injection scenario and intensity |
 
 ---
 

@@ -10,6 +10,7 @@ apm-web-ui/node_modules/
 apm-web-ui/out/
 apm-web-ui/build/
 apm-web-ui/.turbo/
+*.tsbuildinfo
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

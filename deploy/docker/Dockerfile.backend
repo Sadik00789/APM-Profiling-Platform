@@ -1,5 +1,5 @@
 # Multi-Stage Dockerfile for Java 21 APM Collector & Synthetic Agent Services
-FROM eclipse-temurin:21-jdk-alpine AS builder
+FROM eclipse-temurin:21-jdk-jammy AS builder
 WORKDIR /workspace
 
 COPY gradlew .
