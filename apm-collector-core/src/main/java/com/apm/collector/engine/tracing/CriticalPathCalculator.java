@@ -24,13 +24,13 @@ public class CriticalPathCalculator {
 
         Map<String, Long> memo = new HashMap<>();
         Map<String, String> nextCriticalChild = new HashMap<>();
+        Set<String> visiting = new HashSet<>();
 
-        computeSubtreeCriticalWeight(rootSpan.getSpanId(), spanMap, parentToChildren, memo, nextCriticalChild);
+        computeSubtreeCriticalWeight(rootSpan.getSpanId(), spanMap, parentToChildren, memo, nextCriticalChild, visiting);
 
-        // Trace back from root along the maximal critical edge chain
+        // Trace back from root along the maximal critical edge chain (cycle-guarded)
         String currentSpanId = rootSpan.getSpanId();
-        while (currentSpanId != null && !currentSpanId.isEmpty()) {
-            criticalPathSpanIds.add(currentSpanId);
+        while (currentSpanId != null && !currentSpanId.isEmpty() && criticalPathSpanIds.add(currentSpanId)) {
             currentSpanId = nextCriticalChild.get(currentSpanId);
         }
 
@@ -42,36 +42,51 @@ public class CriticalPathCalculator {
             Map<String, SpanRecord> spanMap,
             Map<String, List<SpanRecord>> parentToChildren,
             Map<String, Long> memo,
-            Map<String, String> nextCriticalChild) {
+            Map<String, String> nextCriticalChild,
+            Set<String> visiting) {
 
         if (memo.containsKey(spanId)) {
             return memo.get(spanId);
         }
+        if (!visiting.add(spanId)) {
+            return 0L;
+        }
 
         SpanRecord currentSpan = spanMap.get(spanId);
-        long selfDuration = (currentSpan != null) ? currentSpan.getDurationNano() : 0L;
+        long spanDuration = (currentSpan != null) ? currentSpan.getDurationNano() : 0L;
 
         List<SpanRecord> children = parentToChildren.getOrDefault(spanId, Collections.emptyList());
         if (children.isEmpty()) {
-            memo.put(spanId, selfDuration);
-            return selfDuration;
+            memo.put(spanId, spanDuration);
+            visiting.remove(spanId);
+            return spanDuration;
         }
 
-        long maxChildWeight = 0L;
+        long maxChildWeight = -1L;
+        long bestChildEnd = Long.MIN_VALUE;
         String bestChildId = null;
 
         for (SpanRecord child : children) {
+            String childId = child.getSpanId();
+            if (visiting.contains(childId)) {
+                continue;
+            }
             long childWeight = computeSubtreeCriticalWeight(
-                    child.getSpanId(),
+                    childId,
                     spanMap,
                     parentToChildren,
                     memo,
-                    nextCriticalChild
+                    nextCriticalChild,
+                    visiting
             );
 
-            if (childWeight > maxChildWeight) {
+            SpanRecord resolvedChild = spanMap.getOrDefault(childId, child);
+            long childEnd = resolvedChild != null ? resolvedChild.getEndTimeUnixNano() : 0L;
+
+            if (childWeight > maxChildWeight || (childWeight == maxChildWeight && childEnd > bestChildEnd)) {
                 maxChildWeight = childWeight;
-                bestChildId = child.getSpanId();
+                bestChildEnd = childEnd;
+                bestChildId = childId;
             }
         }
 
@@ -79,8 +94,9 @@ public class CriticalPathCalculator {
             nextCriticalChild.put(spanId, bestChildId);
         }
 
-        long totalWeight = selfDuration + maxChildWeight;
-        memo.put(spanId, totalWeight);
-        return totalWeight;
+        long effectiveWeight = Math.max(spanDuration, maxChildWeight);
+        memo.put(spanId, effectiveWeight);
+        visiting.remove(spanId);
+        return effectiveWeight;
     }
 }

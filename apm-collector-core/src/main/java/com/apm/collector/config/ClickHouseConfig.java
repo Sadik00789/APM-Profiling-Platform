@@ -49,6 +49,7 @@ public class ClickHouseConfig {
         config.setConnectionTimeout(connectionTimeoutMs);
         config.setPoolName("ClickHouseHikariPool");
         config.setConnectionTestQuery("SELECT 1");
+        config.setInitializationFailTimeout(-1);
 
         // ClickHouse specific connection properties
         config.addDataSourceProperty("compress", "1");

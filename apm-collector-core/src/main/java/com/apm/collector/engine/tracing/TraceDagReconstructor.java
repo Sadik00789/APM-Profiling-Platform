@@ -40,23 +40,39 @@ public class TraceDagReconstructor {
             parentToChildren.computeIfAbsent(parentId, k -> new ArrayList<>()).add(span);
         }
 
-        // 2. Identify Root Span
-        SpanRecord rootSpan = null;
-        for (SpanRecord span : rawSpans) {
-            String pid = span.getParentSpanId();
-            if (pid == null || pid.isEmpty() || !spanMap.containsKey(pid)) {
-                rootSpan = span;
-                break;
-            }
+        // 2. Identify Root Span (prefer empty parentSpanId, earliest start time) & attach disconnected orphans
+        SpanRecord rootSpan = spanMap.values().stream()
+                .filter(s -> s.getParentSpanId() == null || s.getParentSpanId().isEmpty())
+                .min(Comparator.comparingLong(SpanRecord::getStartTimeUnixNano))
+                .orElse(null);
+
+        if (rootSpan == null) {
+            rootSpan = spanMap.values().stream()
+                    .filter(s -> !spanMap.containsKey(s.getParentSpanId()))
+                    .min(Comparator.comparingLong(SpanRecord::getStartTimeUnixNano))
+                    .orElse(null);
         }
 
         if (rootSpan == null) {
-            rootSpan = rawSpans.stream().min(Comparator.comparingLong(SpanRecord::getStartTimeUnixNano)).orElse(rawSpans.get(0));
+            rootSpan = spanMap.values().stream()
+                    .min(Comparator.comparingLong(SpanRecord::getStartTimeUnixNano))
+                    .orElse(rawSpans.get(0));
         }
 
-        // 3. Distributed Clock Skew Correction (Top-Down BFS/DFS traversal)
+        String rootId = rootSpan.getSpanId();
+        for (SpanRecord candidate : spanMap.values()) {
+            if (candidate.getSpanId().equals(rootId)) {
+                continue;
+            }
+            String pid = candidate.getParentSpanId();
+            if (pid == null || pid.isEmpty() || !spanMap.containsKey(pid)) {
+                parentToChildren.computeIfAbsent(rootId, k -> new ArrayList<>()).add(candidate);
+            }
+        }
+
+        // 3. Distributed Clock Skew Correction (Top-Down DFS traversal with cycle guard)
         Map<String, SpanRecord> adjustedSpanMap = new HashMap<>();
-        correctClockSkewRecursive(rootSpan, null, parentToChildren, spanMap, adjustedSpanMap);
+        correctClockSkewRecursive(rootSpan, null, parentToChildren, adjustedSpanMap, new HashSet<>());
 
         // Recalculate min start and max end from adjusted spans
         long minStartTime = Long.MAX_VALUE;
@@ -85,7 +101,8 @@ public class TraceDagReconstructor {
                 adjustedSpanMap,
                 criticalSpanIds,
                 0,
-                totalDurationNano
+                totalDurationNano,
+                new HashSet<>()
         );
 
         return TraceTreeResponse.newBuilder()
@@ -103,8 +120,12 @@ public class TraceDagReconstructor {
             SpanRecord current,
             SpanRecord parent,
             Map<String, List<SpanRecord>> parentToChildren,
-            Map<String, SpanRecord> originalMap,
-            Map<String, SpanRecord> adjustedMap) {
+            Map<String, SpanRecord> adjustedMap,
+            Set<String> visited) {
+
+        if (current == null || !visited.add(current.getSpanId())) {
+            return;
+        }
 
         SpanRecord adjusted = current;
 
@@ -135,7 +156,7 @@ public class TraceDagReconstructor {
 
         List<SpanRecord> children = parentToChildren.getOrDefault(current.getSpanId(), Collections.emptyList());
         for (SpanRecord child : children) {
-            correctClockSkewRecursive(child, adjusted, parentToChildren, originalMap, adjustedMap);
+            correctClockSkewRecursive(child, adjusted, parentToChildren, adjustedMap, visited);
         }
     }
 
@@ -145,24 +166,60 @@ public class TraceDagReconstructor {
             Map<String, SpanRecord> adjustedSpanMap,
             Set<String> criticalSpanIds,
             int depth,
-            long totalTraceDurationNano) {
+            long totalTraceDurationNano,
+            Set<String> visited) {
+
+        visited.add(span.getSpanId());
 
         List<SpanRecord> childrenSpans = parentToChildren.getOrDefault(span.getSpanId(), Collections.emptyList());
         List<SpanRecord> adjustedChildren = new ArrayList<>();
         for (SpanRecord child : childrenSpans) {
-            SpanRecord adj = adjustedSpanMap.getOrDefault(child.getSpanId(), child);
-            adjustedChildren.add(adj);
+            if (!visited.contains(child.getSpanId())) {
+                SpanRecord adj = adjustedSpanMap.getOrDefault(child.getSpanId(), child);
+                adjustedChildren.add(adj);
+            }
         }
         adjustedChildren.sort(Comparator.comparingLong(SpanRecord::getStartTimeUnixNano));
 
-        long childrenTotalDuration = 0;
+        long spanStart = span.getStartTimeUnixNano();
+        long spanEnd = span.getEndTimeUnixNano() > spanStart
+                ? span.getEndTimeUnixNano()
+                : spanStart + span.getDurationNano();
+
+        // Compute interval union of child spans so parallel children are not double-counted
+        long coveredChildDurationNano = 0L;
+        long activeIntervalStart = -1L;
+        long activeIntervalEnd = -1L;
+
         List<TraceTreeNode> childNodes = new ArrayList<>();
         for (SpanRecord child : adjustedChildren) {
-            childrenTotalDuration += child.getDurationNano();
-            childNodes.add(buildTreeNode(child, parentToChildren, adjustedSpanMap, criticalSpanIds, depth + 1, totalTraceDurationNano));
+            if (visited.contains(child.getSpanId())) {
+                continue;
+            }
+            long cStart = Math.max(spanStart, child.getStartTimeUnixNano());
+            long childRawEnd = child.getEndTimeUnixNano() > child.getStartTimeUnixNano()
+                    ? child.getEndTimeUnixNano()
+                    : child.getStartTimeUnixNano() + child.getDurationNano();
+            long cEnd = Math.min(spanEnd, childRawEnd);
+            if (cEnd > cStart) {
+                if (activeIntervalStart == -1L) {
+                    activeIntervalStart = cStart;
+                    activeIntervalEnd = cEnd;
+                } else if (cStart <= activeIntervalEnd) {
+                    activeIntervalEnd = Math.max(activeIntervalEnd, cEnd);
+                } else {
+                    coveredChildDurationNano += (activeIntervalEnd - activeIntervalStart);
+                    activeIntervalStart = cStart;
+                    activeIntervalEnd = cEnd;
+                }
+            }
+            childNodes.add(buildTreeNode(child, parentToChildren, adjustedSpanMap, criticalSpanIds, depth + 1, totalTraceDurationNano, visited));
+        }
+        if (activeIntervalStart != -1L) {
+            coveredChildDurationNano += (activeIntervalEnd - activeIntervalStart);
         }
 
-        long selfDurationNano = Math.max(0, span.getDurationNano() - childrenTotalDuration);
+        long selfDurationNano = Math.max(0L, span.getDurationNano() - coveredChildDurationNano);
         double exclusivePercent = (totalTraceDurationNano > 0)
                 ? ((double) selfDurationNano / totalTraceDurationNano * 100.0)
                 : 0.0;

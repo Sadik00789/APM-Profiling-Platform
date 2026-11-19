@@ -65,19 +65,28 @@ public class FoldedStackParser {
             // No sample count found, default to 1 sample
             String lineStr = text.substring(start, end);
             String[] frames = splitFrames(text, start, end);
-            return new ParsedFoldedSample(frames, 1L, lineStr);
+            return frames.length > 0 ? new ParsedFoldedSample(frames, 1L, lineStr) : null;
         }
 
-        // Parse sample count
-        long sampleCount = 1L;
+        // Parse trailing sample count; if not numeric, treat full line as frames with count 1
+        String countStr = text.substring(lastSpaceIdx + 1, end).trim();
+        long sampleCount;
+        int framesEnd = lastSpaceIdx;
         try {
-            sampleCount = Long.parseLong(text.substring(lastSpaceIdx + 1, end).trim());
+            sampleCount = Long.parseLong(countStr);
+            if (sampleCount <= 0) {
+                return null;
+            }
         } catch (NumberFormatException ignored) {
             sampleCount = 1L;
+            framesEnd = end;
         }
 
         String lineStr = text.substring(start, end);
-        String[] frames = splitFrames(text, start, lastSpaceIdx);
+        String[] frames = splitFrames(text, start, framesEnd);
+        if (frames.length == 0) {
+            return null;
+        }
 
         return new ParsedFoldedSample(frames, sampleCount, lineStr);
     }

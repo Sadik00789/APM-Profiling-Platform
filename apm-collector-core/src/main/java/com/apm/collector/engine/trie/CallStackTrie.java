@@ -67,6 +67,18 @@ public class CallStackTrie {
         }
     }
 
+    public int findSymbolId(String frameName) {
+        if (frameName == null || frameName.isEmpty() || ROOT_NAME.equals(frameName)) {
+            return ROOT_SYMBOL_ID;
+        }
+        symbolLock.readLock().lock();
+        try {
+            return stringToId.getInt(frameName);
+        } finally {
+            symbolLock.readLock().unlock();
+        }
+    }
+
     public String resolveSymbol(int symbolId) {
         if (symbolId == ROOT_SYMBOL_ID) {
             return ROOT_NAME;
@@ -150,11 +162,13 @@ public class CallStackTrie {
         long baselineTotal = this.getTotalSamples();
         long comparisonTotal = comparisonTrie.getTotalSamples();
 
-        TrieNode diffRoot = buildDiffNode(this.root, comparisonTrie.getRoot(), baselineTotal, comparisonTotal, 0, comparisonTrie);
+        TrieNode diffRoot = buildDiffNode(this.root, comparisonTrie.getRoot(), ROOT_SYMBOL_ID, baselineTotal, comparisonTotal, 0, comparisonTrie);
 
         double overallChange = 0.0;
         if (baselineTotal > 0) {
             overallChange = ((double) (comparisonTotal - baselineTotal) / baselineTotal) * 100.0;
+        } else if (comparisonTotal > 0) {
+            overallChange = 100.0;
         }
 
         return DiffFlameGraphResponse.newBuilder()
@@ -170,17 +184,16 @@ public class CallStackTrie {
     private TrieNode buildDiffNode(
             TrieNode baseNode,
             TrieNode compNode,
+            int mappedSymbolId,
             long baseTotal,
             long compTotal,
             int depth,
             CallStackTrie compTrie) {
 
-        int symbolId = (compNode != null) ? compNode.getSymbolId() : (baseNode != null ? baseNode.getSymbolId() : ROOT_SYMBOL_ID);
-        TrieNode diffNode = new TrieNode(symbolId, depth);
+        TrieNode diffNode = new TrieNode(mappedSymbolId, depth);
 
         long baseVal = (baseNode != null) ? baseNode.getTotalValue() : 0L;
         long compVal = (compNode != null) ? compNode.getTotalValue() : 0L;
-        long baseSelf = (baseNode != null) ? baseNode.getSelfValue() : 0L;
         long compSelf = (compNode != null) ? compNode.getSelfValue() : 0L;
 
         diffNode.setTotalValue(compVal);
@@ -189,6 +202,8 @@ public class CallStackTrie {
 
         double basePct = (baseTotal > 0) ? ((double) baseVal / baseTotal * 100.0) : 0.0;
         double compPct = (compTotal > 0) ? ((double) compVal / compTotal * 100.0) : 0.0;
+        double compSelfPct = (compTotal > 0) ? ((double) compSelf / compTotal * 100.0) : 0.0;
+        diffNode.setSelfPercent(compSelfPct);
         diffNode.setTotalPercent(compPct);
         diffNode.setDiffPercent(compPct - basePct);
 
@@ -210,12 +225,22 @@ public class CallStackTrie {
 
         for (int childSymId : allChildSymbolIds) {
             String frameName = this.resolveSymbol(childSymId);
-            TrieNode baseChild = (baseNode != null) ? baseNode.getChildren().get(childSymId) : null;
-            
-            int compMappedSymId = compTrie.getOrInternSymbol(frameName);
-            TrieNode compChild = (compNode != null) ? compNode.getChildren().get(compMappedSymId) : null;
+            TrieNode baseChild = null;
+            if (baseNode != null) {
+                synchronized (baseNode) {
+                    baseChild = baseNode.getChildren().get(childSymId);
+                }
+            }
 
-            TrieNode diffChild = buildDiffNode(baseChild, compChild, baseTotal, compTotal, depth + 1, compTrie);
+            int compMappedSymId = compTrie.findSymbolId(frameName);
+            TrieNode compChild = null;
+            if (compNode != null && compMappedSymId != -1) {
+                synchronized (compNode) {
+                    compChild = compNode.getChildren().get(compMappedSymId);
+                }
+            }
+
+            TrieNode diffChild = buildDiffNode(baseChild, compChild, childSymId, baseTotal, compTotal, depth + 1, compTrie);
             diffNode.getChildren().put(childSymId, diffChild);
         }
 

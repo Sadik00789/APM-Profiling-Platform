@@ -48,9 +48,9 @@ public class ProfileSampleWriter {
                 ps.setLong(5, sample.getSampleCount()); // value
                 ps.setString(6, "samples"); // unit
 
-                String stack = (entry.stackTraceString() != null && !entry.stackTraceString().isEmpty())
-                        ? entry.stackTraceString()
-                        : String.join(";", sample.getStackFramesList());
+                String stack = sample.getStackFramesCount() > 0
+                        ? String.join(";", sample.getStackFramesList())
+                        : (entry.stackTraceString() != null ? entry.stackTraceString() : "");
 
                 ps.setString(7, stack);
                 ps.setObject(8, Collections.emptyMap()); // labels

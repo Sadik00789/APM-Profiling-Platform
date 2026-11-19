@@ -74,6 +74,39 @@ public final class FlameGraphSerializer {
         return map;
     }
 
+    public static Map<String, Object> toNestedMap(FlameGraphNode protoNode) {
+        if (protoNode == null) return Collections.emptyMap();
+
+        String name = protoNode.getName();
+        String packageName = protoNode.getPackageName().isEmpty()
+                ? extractPackage(name)
+                : protoNode.getPackageName();
+
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("name", name);
+        map.put("package", packageName);
+        map.put("value", protoNode.getTotalValue());
+        map.put("selfValue", protoNode.getSelfValue());
+        map.put("selfPercent", Math.round(protoNode.getSelfPercent() * 100.0) / 100.0);
+        map.put("totalPercent", Math.round(protoNode.getTotalPercent() * 100.0) / 100.0);
+        map.put("depth", protoNode.getDepth());
+        map.put("diffValue", protoNode.getDiffValue());
+        map.put("diffPercent", Math.round(protoNode.getDiffPercent() * 100.0) / 100.0);
+
+        List<FlameGraphNode> sortedChildren = new ArrayList<>(protoNode.getChildrenList());
+        sortedChildren.sort(Comparator.comparingLong(FlameGraphNode::getTotalValue).reversed());
+
+        if (!sortedChildren.isEmpty()) {
+            List<Map<String, Object>> childrenList = new ArrayList<>(sortedChildren.size());
+            for (FlameGraphNode child : sortedChildren) {
+                childrenList.add(toNestedMap(child));
+            }
+            map.put("children", childrenList);
+        }
+
+        return map;
+    }
+
     public static String extractPackage(String frameName) {
         if (frameName == null || frameName.isEmpty() || "root".equals(frameName)) {
             return "root";

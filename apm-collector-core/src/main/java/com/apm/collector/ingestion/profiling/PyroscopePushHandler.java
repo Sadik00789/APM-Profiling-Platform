@@ -52,7 +52,7 @@ public class PyroscopePushHandler {
                         .setSampleCount(sample.sampleCount())
                         .build();
 
-                batchFlusher.enqueueProfileSample(profileSample, sample.rawLine());
+                batchFlusher.enqueueProfileSample(profileSample, String.join(";", sample.frames()));
             }
 
             return ResponseEntity.ok(Map.<String, Object>of(
@@ -63,9 +63,10 @@ public class PyroscopePushHandler {
             ));
         }).onErrorResume(ex -> {
             log.error("Failed to ingest profile samples: {}", ex.getMessage(), ex);
+            String msg = ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName();
             return Mono.just(ResponseEntity.badRequest().body(Map.<String, Object>of(
                     "status", "error",
-                    "message", ex.getMessage()
+                    "message", msg
             )));
         });
     }

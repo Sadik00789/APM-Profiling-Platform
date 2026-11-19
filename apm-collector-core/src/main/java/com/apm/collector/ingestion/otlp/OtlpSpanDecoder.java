@@ -79,16 +79,40 @@ public class OtlpSpanDecoder {
         String serviceName = node.path("service_name").asText(node.path("serviceName").asText("unknown-service"));
         String operationName = node.path("operation_name").asText(node.path("operationName").asText("operation"));
 
-        long startNano = node.path("start_time_unix_nano").asLong(node.path("startTimeUnixNano").asLong(System.currentTimeMillis() * 1_000_000L));
-        long durationNano = node.path("duration_nano").asLong(node.path("durationNano").asLong(10_000_000L));
-        long endNano = node.path("end_time_unix_nano").asLong(node.path("endTimeUnixNano").asLong(startNano + durationNano));
-        if (durationNano == 0 && endNano > startNano) {
+        long startNano = node.hasNonNull("start_time_unix_nano")
+                ? parseNano(node.get("start_time_unix_nano"))
+                : (node.hasNonNull("startTimeUnixNano") ? parseNano(node.get("startTimeUnixNano")) : System.currentTimeMillis() * 1_000_000L);
+
+        boolean hasDuration = node.hasNonNull("duration_nano") || node.hasNonNull("durationNano");
+        long durationNano = node.hasNonNull("duration_nano")
+                ? parseNano(node.get("duration_nano"))
+                : (node.hasNonNull("durationNano") ? parseNano(node.get("durationNano")) : 0L);
+
+        boolean hasEnd = node.hasNonNull("end_time_unix_nano") || node.hasNonNull("endTimeUnixNano");
+        long endNano = node.hasNonNull("end_time_unix_nano")
+                ? parseNano(node.get("end_time_unix_nano"))
+                : (node.hasNonNull("endTimeUnixNano") ? parseNano(node.get("endTimeUnixNano")) : 0L);
+
+        if (!hasDuration) {
+            if (hasEnd && endNano >= startNano) {
+                durationNano = endNano - startNano;
+            } else {
+                durationNano = 10_000_000L;
+            }
+        } else if (durationNano == 0 && hasEnd && endNano >= startNano) {
             durationNano = endNano - startNano;
+        }
+        if (!hasEnd) {
+            endNano = startNano + durationNano;
         }
 
         String statusStr = node.path("status_code").asText(node.path("statusCode").asText("STATUS_CODE_OK")).toUpperCase();
         StatusCode statusCode = parseStatusCode(statusStr);
         String statusMsg = node.path("status_message").asText(node.path("statusMessage").asText(""));
+        JsonNode kindNode = node.has("span_kind")
+                ? node.get("span_kind")
+                : (node.has("spanKind") ? node.get("spanKind") : node.path("kind"));
+        SpanKind spanKind = parseSpanKind(kindNode, SpanKind.SPAN_KIND_SERVER);
 
         Map<String, String> attributes = new HashMap<>();
         JsonNode attrsNode = node.has("attributes") ? node.get("attributes") : node.get("tags");
@@ -107,7 +131,7 @@ public class OtlpSpanDecoder {
                 .setDurationNano(durationNano)
                 .setStatusCode(statusCode)
                 .setStatusMessage(statusMsg)
-                .setSpanKind(SpanKind.SPAN_KIND_SERVER)
+                .setSpanKind(spanKind)
                 .putAllAttributes(attributes)
                 .build();
     }
@@ -123,9 +147,13 @@ public class OtlpSpanDecoder {
         long durationNano = (endNano >= startNano && startNano > 0) ? (endNano - startNano) : 0L;
 
         JsonNode statusNode = node.path("status");
-        String statusCodeStr = statusNode.path("code").asText("STATUS_CODE_OK");
+        JsonNode codeNode = statusNode.path("code");
+        String statusCodeStr = codeNode.isIntegralNumber()
+                ? String.valueOf(codeNode.asInt())
+                : codeNode.asText("STATUS_CODE_OK");
         StatusCode statusCode = parseStatusCode(statusCodeStr);
         String statusMessage = statusNode.path("message").asText("");
+        SpanKind spanKind = parseSpanKind(node.path("kind"), SpanKind.SPAN_KIND_INTERNAL);
 
         Map<String, String> attributes = new HashMap<>(resourceAttrs);
         attributes.putAll(extractAttributes(node.path("attributes")));
@@ -141,7 +169,7 @@ public class OtlpSpanDecoder {
                 .setDurationNano(durationNano)
                 .setStatusCode(statusCode)
                 .setStatusMessage(statusMessage)
-                .setSpanKind(SpanKind.SPAN_KIND_INTERNAL)
+                .setSpanKind(spanKind)
                 .putAllAttributes(attributes)
                 .build();
     }
@@ -200,5 +228,33 @@ public class OtlpSpanDecoder {
             return StatusCode.STATUS_CODE_UNSET;
         }
         return StatusCode.STATUS_CODE_OK;
+    }
+
+    private SpanKind parseSpanKind(JsonNode kindNode, SpanKind defaultKind) {
+        if (kindNode == null || kindNode.isMissingNode() || kindNode.isNull()) {
+            return defaultKind;
+        }
+        if (kindNode.isIntegralNumber()) {
+            return switch (kindNode.asInt()) {
+                case 0 -> SpanKind.SPAN_KIND_UNSPECIFIED;
+                case 1 -> SpanKind.SPAN_KIND_INTERNAL;
+                case 2 -> SpanKind.SPAN_KIND_SERVER;
+                case 3 -> SpanKind.SPAN_KIND_CLIENT;
+                case 4 -> SpanKind.SPAN_KIND_PRODUCER;
+                case 5 -> SpanKind.SPAN_KIND_CONSUMER;
+                default -> defaultKind;
+            };
+        }
+        String text = kindNode.asText("").trim().toUpperCase();
+        if (text.isEmpty()) return defaultKind;
+        return switch (text) {
+            case "1", "INTERNAL", "SPAN_KIND_INTERNAL" -> SpanKind.SPAN_KIND_INTERNAL;
+            case "2", "SERVER", "SPAN_KIND_SERVER" -> SpanKind.SPAN_KIND_SERVER;
+            case "3", "CLIENT", "SPAN_KIND_CLIENT" -> SpanKind.SPAN_KIND_CLIENT;
+            case "4", "PRODUCER", "SPAN_KIND_PRODUCER" -> SpanKind.SPAN_KIND_PRODUCER;
+            case "5", "CONSUMER", "SPAN_KIND_CONSUMER" -> SpanKind.SPAN_KIND_CONSUMER;
+            case "0", "UNSPECIFIED", "SPAN_KIND_UNSPECIFIED" -> SpanKind.SPAN_KIND_UNSPECIFIED;
+            default -> defaultKind;
+        };
     }
 }

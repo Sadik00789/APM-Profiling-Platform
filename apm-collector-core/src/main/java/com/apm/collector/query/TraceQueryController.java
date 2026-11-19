@@ -10,6 +10,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -41,6 +42,9 @@ public class TraceQueryController {
             @RequestParam(defaultValue = "0") int offset) {
 
         return Mono.fromCallable(() -> {
+            int clampedLimit = Math.max(1, Math.min(500, limit));
+            int clampedOffset = Math.max(0, offset);
+
             StringBuilder sql = new StringBuilder("""
                 SELECT start_time, end_time, trace_id, span_id, parent_span_id, service_name,
                        operation_name, duration_nano, status_code, attributes
@@ -52,15 +56,19 @@ public class TraceQueryController {
 
             if (service != null && !service.isBlank() && !"all".equalsIgnoreCase(service)) {
                 sql.append(" AND service_name = ?");
-                params.add(service);
+                params.add(service.trim());
             }
             if (operation != null && !operation.isBlank()) {
-                sql.append(" AND operation_name = ?");
-                params.add(operation);
+                sql.append(" AND positionCaseInsensitive(operation_name, ?) > 0");
+                params.add(operation.trim());
             }
             if (status != null && !status.isBlank() && !"all".equalsIgnoreCase(status)) {
-                sql.append(" AND status_code = ?");
-                params.add(status.toUpperCase());
+                String upper = status.trim().toUpperCase();
+                String shortStatus = upper.startsWith("STATUS_CODE_") ? upper.substring("STATUS_CODE_".length()) : upper;
+                String enumStatus = upper.startsWith("STATUS_CODE_") ? upper : "STATUS_CODE_" + upper;
+                sql.append(" AND status_code IN (?, ?)");
+                params.add(enumStatus);
+                params.add(shortStatus);
             }
             if (minDurationMs != null && minDurationMs > 0) {
                 sql.append(" AND duration_nano >= ?");
@@ -80,8 +88,8 @@ public class TraceQueryController {
             }
 
             sql.append(" ORDER BY start_time DESC LIMIT ? OFFSET ?");
-            params.add(limit);
-            params.add(offset);
+            params.add(clampedLimit);
+            params.add(clampedOffset);
 
             List<Map<String, Object>> spans = new ArrayList<>();
 
@@ -117,10 +125,10 @@ public class TraceQueryController {
             return ResponseEntity.ok(Map.<String, Object>of(
                     "spans", spans,
                     "count", spans.size(),
-                    "limit", limit,
-                    "offset", offset
+                    "limit", clampedLimit,
+                    "offset", clampedOffset
             ));
-        });
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     @GetMapping("/{traceId}")
@@ -143,7 +151,9 @@ public class TraceQueryController {
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
                         Timestamp ts = rs.getTimestamp("start_time");
-                        long startNano = (ts != null) ? ts.getTime() * 1_000_000L + ts.getNanos() % 1_000_000 : System.currentTimeMillis() * 1_000_000L;
+                        long startNano = (ts != null)
+                                ? ts.toInstant().getEpochSecond() * 1_000_000_000L + ts.getNanos()
+                                : System.currentTimeMillis() * 1_000_000L;
                         long durationNano = rs.getLong("duration_nano");
 
                         String statusStr = rs.getString("status_code");
@@ -192,7 +202,7 @@ public class TraceQueryController {
             response.put("found", true);
 
             return ResponseEntity.ok(response);
-        });
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     private Map<String, Object> formatTreeNode(com.apm.contracts.trace.v1.TraceTreeNode node) {

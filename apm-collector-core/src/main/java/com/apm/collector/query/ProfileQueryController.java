@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -39,13 +40,14 @@ public class ProfileQueryController {
             long until = (untilTimestampSec != null && untilTimestampSec > 0) ? untilTimestampSec : now;
             long from = (fromTimestampSec != null && fromTimestampSec > 0) ? fromTimestampSec : (until - 3600); // 1h default
 
-            CallStackTrie trie = loadTrieFromClickHouse(service, profileType, from, until);
+            ProfileType pType = parseProfileType(profileType);
+            CallStackTrie trie = loadTrieFromClickHouse(service, pType, from, until, true);
 
             trie.prune(minPercentThreshold);
 
             Map<String, Object> response = new HashMap<>();
             response.put("serviceName", service);
-            response.put("profileType", profileType.toUpperCase());
+            response.put("profileType", pType.name().replace("PROFILE_TYPE_", ""));
             response.put("fromTimestampSec", from);
             response.put("untilTimestampSec", until);
             response.put("totalSamples", trie.getTotalSamples());
@@ -54,7 +56,7 @@ public class ProfileQueryController {
             response.put("root", FlameGraphSerializer.toNestedMap(trie.getRoot(), trie));
 
             return ResponseEntity.ok(response);
-        });
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     @GetMapping("/diff")
@@ -74,31 +76,44 @@ public class ProfileQueryController {
             long cUntil = (compUntil != null) ? compUntil : now;
             long cFrom = (compFrom != null) ? compFrom : cUntil - 3600;
 
-            CallStackTrie baseTrie = loadTrieFromClickHouse(service, profileType, bFrom, bUntil);
-            CallStackTrie compTrie = loadTrieFromClickHouse(service, profileType, cFrom, cUntil);
-
             ProfileType pType = parseProfileType(profileType);
+            CallStackTrie baseTrie = loadTrieFromClickHouse(service, pType, bFrom, bUntil, false);
+            CallStackTrie compTrie = loadTrieFromClickHouse(service, pType, cFrom, cUntil, false);
+
+            if (baseTrie.getTotalSamples() == 0 && compTrie.getTotalSamples() == 0) {
+                seedSampleProfiles(baseTrie, service, false);
+                seedSampleProfiles(compTrie, service, true);
+            }
+
             DiffFlameGraphResponse diffProto = baseTrie.computeDiff(compTrie, service, pType);
 
             Map<String, Object> response = new HashMap<>();
             response.put("serviceName", service);
-            response.put("profileType", profileType.toUpperCase());
+            response.put("profileType", pType.name().replace("PROFILE_TYPE_", ""));
             response.put("baselineTotal", diffProto.getBaselineTotal());
             response.put("comparisonTotal", diffProto.getComparisonTotal());
             response.put("overallChangePercent", Math.round(diffProto.getOverallChangePercent() * 100.0) / 100.0);
-            response.put("root", FlameGraphSerializer.toNestedMap(baseTrie.getRoot(), baseTrie));
+            response.put("root", FlameGraphSerializer.toNestedMap(diffProto.getRoot()));
 
             return ResponseEntity.ok(response);
-        });
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    private CallStackTrie loadTrieFromClickHouse(String service, String profileType, long fromSec, long untilSec) {
+    private CallStackTrie loadTrieFromClickHouse(
+            String service,
+            ProfileType profileType,
+            long fromSec,
+            long untilSec,
+            boolean seedIfEmpty) {
         CallStackTrie trie = new CallStackTrie();
+        String enumType = profileType.name();
+        String shortType = enumType.replace("PROFILE_TYPE_", "");
+
         String sql = """
             SELECT stack_trace, sum(value) AS total_samples
             FROM default.profiles_samples
             WHERE service_name = ?
-              AND profile_type = ?
+              AND profile_type IN (?, ?)
               AND sample_timestamp >= ?
               AND sample_timestamp <= ?
             GROUP BY stack_trace
@@ -108,15 +123,16 @@ public class ProfileQueryController {
              PreparedStatement ps = conn.prepareStatement(sql)) {
 
             ps.setString(1, service);
-            ps.setString(2, profileType.toUpperCase());
-            ps.setTimestamp(3, new Timestamp(fromSec * 1000L));
-            ps.setTimestamp(4, new Timestamp(untilSec * 1000L));
+            ps.setString(2, enumType);
+            ps.setString(3, shortType);
+            ps.setTimestamp(4, new Timestamp(fromSec * 1000L));
+            ps.setTimestamp(5, new Timestamp(untilSec * 1000L));
 
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     String stack = rs.getString("stack_trace");
                     long samples = rs.getLong("total_samples");
-                    if (stack != null && !stack.isEmpty()) {
+                    if (stack != null && !stack.isEmpty() && samples > 0) {
                         String[] frames = stack.split(";");
                         trie.insert(frames, samples);
                     }
@@ -127,26 +143,36 @@ public class ProfileQueryController {
         }
 
         // If no records in database yet, seed with sample profiles for immediate UI preview
-        if (trie.getTotalSamples() == 0) {
-            seedSampleProfiles(trie, service);
+        if (seedIfEmpty && trie.getTotalSamples() == 0) {
+            seedSampleProfiles(trie, service, false);
         }
 
         return trie;
     }
 
-    private void seedSampleProfiles(CallStackTrie trie, String service) {
+    private void seedSampleProfiles(CallStackTrie trie, String service, boolean incidentSpike) {
         String base = "java.lang.Thread.run;org.springframework.boot.web.embedded.netty.NettyWebServer.start;";
-        trie.insert((base + "com.apm." + service + ".controller.handleRequest;com.apm." + service + ".service.process;com.apm.common.crypto.BCrypt.hashPassword").split(";"), 850);
-        trie.insert((base + "com.apm." + service + ".controller.handleRequest;com.apm." + service + ".service.process;com.apm.common.regex.PatternMatcher.matches").split(";"), 640);
-        trie.insert((base + "com.apm." + service + ".controller.handleRequest;com.apm." + service + ".repository.findUser;com.clickhouse.jdbc.internal.ClickHouseConnection.query").split(";"), 420);
-        trie.insert((base + "com.apm." + service + ".controller.handleRequest;com.apm." + service + ".service.serializeJson;com.fasterxml.jackson.databind.ObjectMapper.writeValue").split(";"), 290);
-        trie.insert((base + "com.apm." + service + ".healthCheck;com.apm.collector.ApmCollectorApplication.ping").split(";"), 110);
+        long bcryptSamples = incidentSpike ? 1650 : 850;
+        long regexSamples = incidentSpike ? 1120 : 640;
+        long querySamples = incidentSpike ? 390 : 420;
+        long jsonSamples = incidentSpike ? 180 : 290;
+        long pingSamples = incidentSpike ? 95 : 110;
+
+        trie.insert((base + "com.apm." + service + ".controller.handleRequest;com.apm." + service + ".service.process;com.apm.common.crypto.BCrypt.hashPassword").split(";"), bcryptSamples);
+        trie.insert((base + "com.apm." + service + ".controller.handleRequest;com.apm." + service + ".service.process;com.apm.common.regex.PatternMatcher.matches").split(";"), regexSamples);
+        trie.insert((base + "com.apm." + service + ".controller.handleRequest;com.apm." + service + ".repository.findUser;com.clickhouse.jdbc.internal.ClickHouseConnection.query").split(";"), querySamples);
+        trie.insert((base + "com.apm." + service + ".controller.handleRequest;com.apm." + service + ".service.serializeJson;com.fasterxml.jackson.databind.ObjectMapper.writeValue").split(";"), jsonSamples);
+        trie.insert((base + "com.apm." + service + ".healthCheck;com.apm.collector.ApmCollectorApplication.ping").split(";"), pingSamples);
     }
 
     private ProfileType parseProfileType(String str) {
-        if (str == null) return ProfileType.PROFILE_TYPE_CPU;
+        if (str == null || str.isBlank()) return ProfileType.PROFILE_TYPE_CPU;
+        String normalized = str.trim().toUpperCase();
+        if (!normalized.startsWith("PROFILE_TYPE_")) {
+            normalized = "PROFILE_TYPE_" + normalized;
+        }
         try {
-            return ProfileType.valueOf("PROFILE_TYPE_" + str.toUpperCase());
+            return ProfileType.valueOf(normalized);
         } catch (IllegalArgumentException e) {
             return ProfileType.PROFILE_TYPE_CPU;
         }
