@@ -14,12 +14,13 @@ public class JfrCpuLoadInjector {
     private final Random random = new Random();
 
     public String generateFoldedProfile(String serviceName, boolean injectChaosSpike) {
-        boolean activeCpuSpike = chaosStateService.isScenarioActive(ChaosStateService.ChaosScenario.CPU_SPIKE) || injectChaosSpike;
-        double intensity = chaosStateService.getStatus().intensity();
+        boolean globalCpuSpike = chaosStateService.isScenarioActive(ChaosStateService.ChaosScenario.CPU_SPIKE);
+        boolean activeCpuSpike = globalCpuSpike || injectChaosSpike;
+        double effectiveIntensity = globalCpuSpike ? chaosStateService.getStatus().intensity() : (injectChaosSpike ? 0.75 : 0.0);
 
         if (activeCpuSpike) {
             // Perform small background math cycle to simulate actual CPU burning without crashing machine
-            burnCpuCycles((int) (intensity * 50_000));
+            burnCpuCycles((int) (effectiveIntensity * 50_000));
         }
 
         StringBuilder sb = new StringBuilder();
@@ -35,7 +36,7 @@ public class JfrCpuLoadInjector {
                 .append(80 + random.nextInt(30)).append("\n");
 
         if (activeCpuSpike) {
-            int spikeMultiplier = (int) (1 + intensity * 3);
+            int spikeMultiplier = (int) Math.max(1, 1 + effectiveIntensity * 3);
 
             // Chaos 1: Catastrophic Regex Backtracking
             sb.append(prefix).append("com.apm.").append(serviceName).append(".service.validateOrder;com.apm.common.regex.PatternMatcher.matches;java.util.regex.Matcher.find;java.util.regex.Pattern.matcher ")

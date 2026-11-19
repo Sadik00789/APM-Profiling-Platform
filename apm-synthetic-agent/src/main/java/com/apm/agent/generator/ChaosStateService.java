@@ -32,15 +32,23 @@ public class ChaosStateService {
     }
 
     public ChaosStatus injectChaos(String scenarioName, Double intensity) {
+        if (scenarioName == null || scenarioName.isBlank()) {
+            throw new IllegalArgumentException("Chaos scenario must not be blank");
+        }
         ChaosScenario scenario;
         try {
-            scenario = ChaosScenario.valueOf(scenarioName.toUpperCase());
-        } catch (Exception e) {
-            scenario = ChaosScenario.CPU_SPIKE;
+            scenario = ChaosScenario.valueOf(scenarioName.trim().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(
+                    "Unknown chaos scenario: " + scenarioName + ". Valid scenarios: NONE, CPU_SPIKE, DB_LATENCY, ERROR_STORM"
+            );
         }
 
         double val = (intensity != null) ? Math.max(0.0, Math.min(1.0, intensity)) : 1.0;
-        ChaosStatus newStatus = new ChaosStatus(scenario, val, scenario != ChaosScenario.NONE, System.currentTimeMillis());
+        if (scenario == ChaosScenario.NONE) {
+            return resetChaos();
+        }
+        ChaosStatus newStatus = new ChaosStatus(scenario, val, true, System.currentTimeMillis());
         status.set(newStatus);
         return newStatus;
     }

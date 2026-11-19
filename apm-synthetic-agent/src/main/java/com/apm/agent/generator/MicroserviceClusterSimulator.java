@@ -32,136 +32,150 @@ public class MicroserviceClusterSimulator {
     @Scheduled(fixedRateString = "${apm.agent.traffic.simulation-rate-ms:150}")
     public void simulateTransaction() {
         try {
-            List<SpanRecord> traceSpans = new ArrayList<>();
-            long nowNano = System.currentTimeMillis() * 1_000_000L;
-
-            ChaosStateService.ChaosStatus chaos = chaosStateService.getStatus();
-            boolean isDbLatencyScenario = chaos.active() && chaos.scenario() == ChaosStateService.ChaosScenario.DB_LATENCY;
-            boolean isErrorStormScenario = chaos.active() && chaos.scenario() == ChaosStateService.ChaosScenario.ERROR_STORM;
-            boolean isCpuSpikeScenario = chaos.active() && chaos.scenario() == ChaosStateService.ChaosScenario.CPU_SPIKE;
-
-            double currentErrorRate = isErrorStormScenario ? 85.0 : defaultErrorRatePercent;
-            boolean isError = (random.nextDouble() * 100.0) < currentErrorRate;
-
-            TraceContextPropagator.TraceContext rootCtx = contextPropagator.createRootContext();
-
-            // 1. Gateway Span
-            long baseGatewayDuration = (isCpuSpikeScenario ? 450 : isDbLatencyScenario ? 600 : 45 + random.nextInt(20)) * 1_000_000L;
-            SpanRecord gatewaySpan = createSpan(
-                    rootCtx,
-                    "api-gateway",
-                    "POST /api/v1/checkout",
-                    nowNano,
-                    baseGatewayDuration,
-                    isError ? StatusCode.STATUS_CODE_ERROR : StatusCode.STATUS_CODE_OK,
-                    Map.of("http.method", "POST", "http.url", "/api/v1/checkout", "http.status_code", isError ? "500" : "200")
-            );
-            traceSpans.add(gatewaySpan);
-
-            // 2. Order Service Span
-            TraceContextPropagator.TraceContext orderCtx = contextPropagator.createChildContext(rootCtx);
-            long orderStart = nowNano + 2_000_000L;
-            long orderDuration = baseGatewayDuration - 5_000_000L;
-            SpanRecord orderSpan = createSpan(
-                    orderCtx,
-                    "order-service",
-                    "POST /orders/create",
-                    orderStart,
-                    orderDuration,
-                    isError ? StatusCode.STATUS_CODE_ERROR : StatusCode.STATUS_CODE_OK,
-                    Map.of("user.id", "usr-" + random.nextInt(10000), "order.amount", "$" + (10 + random.nextInt(200)))
-            );
-            traceSpans.add(orderSpan);
-
-            // 3. Inventory Service Span
-            TraceContextPropagator.TraceContext invCtx = contextPropagator.createChildContext(orderCtx);
-            long invStart = orderStart + 3_000_000L;
-            long invDuration = (12 + random.nextInt(10)) * 1_000_000L;
-            SpanRecord invSpan = createSpan(
-                    invCtx,
-                    "inventory-service",
-                    "POST /inventory/reserve",
-                    invStart,
-                    invDuration,
-                    StatusCode.STATUS_CODE_OK,
-                    Map.of("sku.id", "sku-" + random.nextInt(500), "quantity", "1")
-            );
-            traceSpans.add(invSpan);
-
-            // 3b. Inventory DB Query (Injected with 300ms - 1500ms latency during DB_LATENCY chaos)
-            TraceContextPropagator.TraceContext invDbCtx = contextPropagator.createChildContext(invCtx);
-            long dbDurationMs = isDbLatencyScenario ? (350 + random.nextInt(900)) : (4 + random.nextInt(4));
-            long invDbDuration = dbDurationMs * 1_000_000L;
-            SpanRecord invDbSpan = createSpan(
-                    invDbCtx,
-                    "inventory-service",
-                    "SQL UPDATE inventory SET stock = stock - 1",
-                    invStart + 1_000_000L,
-                    invDbDuration,
-                    StatusCode.STATUS_CODE_OK,
-                    Map.of(
-                            "db.system", "postgresql",
-                            "db.statement", "UPDATE inventory SET stock = stock - 1 WHERE sku = ?",
-                            "db.latency_injected", isDbLatencyScenario ? "true" : "false"
-                    )
-            );
-            traceSpans.add(invDbSpan);
-
-            // 4. Payment Service Span (Main bottleneck / Error Storm target)
-            TraceContextPropagator.TraceContext payCtx = contextPropagator.createChildContext(orderCtx);
-            long payStart = invStart + invDuration + invDbDuration + 2_000_000L;
-            long payDurationMs = isCpuSpikeScenario ? 380 : (65 + random.nextInt(35));
-            long payDuration = payDurationMs * 1_000_000L;
-            SpanRecord paySpan = createSpan(
-                    payCtx,
-                    "payment-service",
-                    "POST /payments/charge",
-                    payStart,
-                    payDuration,
-                    isError ? StatusCode.STATUS_CODE_ERROR : StatusCode.STATUS_CODE_OK,
-                    Map.of(
-                            "payment.provider", "stripe",
-                            "payment.method", "credit_card",
-                            "http.status_code", isError ? "500" : "200"
-                    )
-            );
-            traceSpans.add(paySpan);
-
-            // 4b. Stripe External Gateway Call
-            TraceContextPropagator.TraceContext stripeCtx = contextPropagator.createChildContext(payCtx);
-            long stripeDuration = payDuration - 8_000_000L;
-            SpanRecord stripeSpan = createSpan(
-                    stripeCtx,
-                    "payment-service",
-                    "HTTP POST https://api.stripe.com/v1/charges",
-                    payStart + 3_000_000L,
-                    stripeDuration,
-                    isError ? StatusCode.STATUS_CODE_ERROR : StatusCode.STATUS_CODE_OK,
-                    Map.of("http.url", "https://api.stripe.com/v1/charges", "peer.service", "stripe")
-            );
-            traceSpans.add(stripeSpan);
-
-            // 5. Notification Service Span
-            TraceContextPropagator.TraceContext notifCtx = contextPropagator.createChildContext(orderCtx);
-            long notifStart = payStart + payDuration + 1_000_000L;
-            long notifDuration = (15 + random.nextInt(8)) * 1_000_000L;
-            SpanRecord notifSpan = createSpan(
-                    notifCtx,
-                    "notification-service",
-                    "POST /notifications/email",
-                    notifStart,
-                    notifDuration,
-                    StatusCode.STATUS_CODE_OK,
-                    Map.of("notification.channel", "email", "template", "order_confirmation")
-            );
-            traceSpans.add(notifSpan);
-
-            // Emit full trace
-            spanEmitter.emitSpans(traceSpans);
-
+            spanEmitter.emitSpans(generateTraceSpans());
         } catch (Exception e) {
             log.error("Simulation error: {}", e.getMessage(), e);
         }
+    }
+
+    public List<SpanRecord> generateTraceSpans() {
+        List<SpanRecord> traceSpans = new ArrayList<>();
+        long gatewayStart = System.currentTimeMillis() * 1_000_000L;
+
+        ChaosStateService.ChaosStatus chaos = chaosStateService.getStatus();
+        boolean isDbLatencyScenario = chaos.active() && chaos.scenario() == ChaosStateService.ChaosScenario.DB_LATENCY;
+        boolean isErrorStormScenario = chaos.active() && chaos.scenario() == ChaosStateService.ChaosScenario.ERROR_STORM;
+        boolean isCpuSpikeScenario = chaos.active() && chaos.scenario() == ChaosStateService.ChaosScenario.CPU_SPIKE;
+        double intensityScale = chaos.active() ? Math.max(0.25, chaos.intensity()) : 1.0;
+
+        double currentErrorRate = isErrorStormScenario
+                ? Math.min(100.0, Math.max(defaultErrorRatePercent, 85.0 * chaos.intensity()))
+                : defaultErrorRatePercent;
+        boolean isError = (random.nextDouble() * 100.0) < currentErrorRate;
+
+        TraceContextPropagator.TraceContext rootCtx = contextPropagator.createRootContext();
+        long orderStart = gatewayStart + 2_000_000L;
+
+        // 3. Inventory Service & Inventory DB spans (bottom-up timing so parent encloses child)
+        TraceContextPropagator.TraceContext orderCtx = contextPropagator.createChildContext(rootCtx);
+        TraceContextPropagator.TraceContext invCtx = contextPropagator.createChildContext(orderCtx);
+        long invStart = orderStart + 3_000_000L;
+        long dbDurationMs = isDbLatencyScenario
+                ? Math.round((350 + random.nextInt(900)) * intensityScale)
+                : (4 + random.nextInt(4));
+        long invDbStart = invStart + 1_000_000L;
+        long invDbDuration = dbDurationMs * 1_000_000L;
+
+        TraceContextPropagator.TraceContext invDbCtx = contextPropagator.createChildContext(invCtx);
+        SpanRecord invDbSpan = createSpan(
+                invDbCtx,
+                "inventory-service",
+                "SQL UPDATE inventory SET stock = stock - 1",
+                invDbStart,
+                invDbDuration,
+                StatusCode.STATUS_CODE_OK,
+                Map.of(
+                        "db.system", "postgresql",
+                        "db.statement", "UPDATE inventory SET stock = stock - 1 WHERE sku = ?",
+                        "db.latency_injected", isDbLatencyScenario ? "true" : "false"
+                )
+        );
+
+        long invDuration = (invDbStart - invStart) + invDbDuration + (8 + random.nextInt(6)) * 1_000_000L;
+        SpanRecord invSpan = createSpan(
+                invCtx,
+                "inventory-service",
+                "POST /inventory/reserve",
+                invStart,
+                invDuration,
+                StatusCode.STATUS_CODE_OK,
+                Map.of("sku.id", "sku-" + random.nextInt(500), "quantity", "1")
+        );
+
+        // 4. Payment Service & Stripe External Gateway Call (bottom-up timing)
+        TraceContextPropagator.TraceContext payCtx = contextPropagator.createChildContext(orderCtx);
+        long payStart = invStart + invDuration + 2_000_000L;
+        long stripeStart = payStart + 3_000_000L;
+        long stripeDurationMs = isCpuSpikeScenario
+                ? Math.round((320 + random.nextInt(80)) * intensityScale)
+                : (55 + random.nextInt(30));
+        long stripeDuration = stripeDurationMs * 1_000_000L;
+
+        TraceContextPropagator.TraceContext stripeCtx = contextPropagator.createChildContext(payCtx);
+        SpanRecord stripeSpan = createSpan(
+                stripeCtx,
+                "payment-service",
+                "HTTP POST https://api.stripe.com/v1/charges",
+                stripeStart,
+                stripeDuration,
+                isError ? StatusCode.STATUS_CODE_ERROR : StatusCode.STATUS_CODE_OK,
+                Map.of("http.url", "https://api.stripe.com/v1/charges", "peer.service", "stripe")
+        );
+
+        long payDuration = (stripeStart - payStart) + stripeDuration + 5_000_000L;
+        SpanRecord paySpan = createSpan(
+                payCtx,
+                "payment-service",
+                "POST /payments/charge",
+                payStart,
+                payDuration,
+                isError ? StatusCode.STATUS_CODE_ERROR : StatusCode.STATUS_CODE_OK,
+                Map.of(
+                        "payment.provider", "stripe",
+                        "payment.method", "credit_card",
+                        "http.status_code", isError ? "500" : "200"
+                )
+        );
+
+        // 5. Notification Service Span
+        TraceContextPropagator.TraceContext notifCtx = contextPropagator.createChildContext(orderCtx);
+        long notifStart = payStart + payDuration + 1_000_000L;
+        long notifDuration = (15 + random.nextInt(8)) * 1_000_000L;
+        SpanRecord notifSpan = createSpan(
+                notifCtx,
+                "notification-service",
+                "POST /notifications/email",
+                notifStart,
+                notifDuration,
+                StatusCode.STATUS_CODE_OK,
+                Map.of("notification.channel", "email", "template", "order_confirmation")
+        );
+
+        // 2. Order Service Span encloses inventory, payment, and notification
+        long orderEnd = notifStart + notifDuration + 2_000_000L;
+        long orderDuration = orderEnd - orderStart;
+        SpanRecord orderSpan = createSpan(
+                orderCtx,
+                "order-service",
+                "POST /orders/create",
+                orderStart,
+                orderDuration,
+                isError ? StatusCode.STATUS_CODE_ERROR : StatusCode.STATUS_CODE_OK,
+                Map.of("user.id", "usr-" + random.nextInt(10000), "order.amount", "$" + (10 + random.nextInt(200)))
+        );
+
+        // 1. Gateway Root Span strictly encloses order span
+        long gatewayEnd = orderEnd + 3_000_000L;
+        long gatewayDuration = gatewayEnd - gatewayStart;
+        SpanRecord gatewaySpan = createSpan(
+                rootCtx,
+                "api-gateway",
+                "POST /api/v1/checkout",
+                gatewayStart,
+                gatewayDuration,
+                isError ? StatusCode.STATUS_CODE_ERROR : StatusCode.STATUS_CODE_OK,
+                Map.of("http.method", "POST", "http.url", "/api/v1/checkout", "http.status_code", isError ? "500" : "200")
+        );
+
+        traceSpans.add(gatewaySpan);
+        traceSpans.add(orderSpan);
+        traceSpans.add(invSpan);
+        traceSpans.add(invDbSpan);
+        traceSpans.add(paySpan);
+        traceSpans.add(stripeSpan);
+        traceSpans.add(notifSpan);
+
+        return traceSpans;
     }
 
     private SpanRecord createSpan(

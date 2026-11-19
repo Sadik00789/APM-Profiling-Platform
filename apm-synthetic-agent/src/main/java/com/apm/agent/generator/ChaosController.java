@@ -37,4 +37,9 @@ public class ChaosController {
     public ResponseEntity<ChaosStateService.ChaosStatus> getStatus() {
         return ResponseEntity.ok(chaosStateService.getStatus());
     }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, String>> handleInvalidScenario(IllegalArgumentException ex) {
+        return ResponseEntity.badRequest().body(Map.of("error", ex.getMessage()));
+    }
 }
